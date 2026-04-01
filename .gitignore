@@ -1,0 +1,34 @@
+# dependencies
+/node_modules
+
+# build output
+/build
+
+# environment files
+.env
+.env.local
+.env.production
+.env.test
+.env*
+
+# Session and authentication files (Juwa, GameVault, FireKirin, etc.)
+**/session*.json
+**/cookies*.json
+**/local*.json
+controllers/sessionjuwa.json
+controllers/cookiesjuwa.json
+controllers/localjuwa.json
+gmcontrollers/sessiongv.json
+gmcontrollers/cookiesgv.json
+gmcontrollers/localgv.json
+controllers/sessionfirekirin.json
+controllers/cookiesfirekirin.json
+controllers/localfirekirin.json
+gmcontrollers/sessiongv.json
+gmcontrollers/cookiesgv.json
+gmcontrollers/cookiesos.json
+
+# Any other session/auth files in any directory
+session*.json
+cookies*.json
+local*.json
