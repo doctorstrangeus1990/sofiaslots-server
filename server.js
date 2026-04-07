@@ -74,6 +74,7 @@ const allowedOrigins = [
   'https://sofiaslots-admin-frontend.onrender.com',
   'https://sofiaslots-frontend-user.onrender.com',
   'https://sofiaslots.com',
+  'https://www.sofiaslots.com',
 ];
 
 app.use((req, res, next) => {
