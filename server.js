@@ -6,7 +6,8 @@ const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const path = require('path');
-const requestIp = require('request-ip'); // ✅ ADD THIS
+const fs = require('fs');
+const requestIp = require('request-ip');
 
 // Load environment variables
 dotenv.config();
@@ -45,7 +46,6 @@ const { startChimeVerificationJob } = require('./jobs/chimeVerificationJob');
 // ================================
 // TRUST PROXY CONFIGURATION
 // ================================
-// ✅ CRITICAL: Must be set BEFORE any middleware that uses req.ip
 app.set('trust proxy', true);
 
 // ================================
@@ -60,7 +60,6 @@ app.use(helmet({
 // ================================
 // IP DETECTION MIDDLEWARE
 // ================================
-// ✅ ADD THIS - Must come early in middleware chain
 app.use(requestIp.mw());
 
 // ================================
@@ -96,24 +95,6 @@ app.use((req, res, next) => {
 });
 
 // ================================
-// RATE LIMITING - TEMPORARILY DISABLED FOR TESTING
-// ================================
-
-// const limiter = rateLimit({
-//   windowMs: 15 * 60 * 1000,
-//   max: 100,
-//   message: {
-//     success: false,
-//     message: 'Too many requests from this IP, please try again later.'
-//   },
-//   standardHeaders: true,
-//   legacyHeaders: false,
-// });
-// app.use(limiter);
-
-// TODO: Re-enable rate limiting after testing
-
-// ================================
 // BODY PARSING MIDDLEWARE
 // ================================
 
@@ -122,10 +103,14 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
 // ================================
-// IP LOGGING MIDDLEWARE (OPTIONAL - FOR DEBUGGING)
+// STATIC FILES — BEFORE ROUTES
+// ================================
+app.use('/uploads', express.static('/app/public/uploads'));
+
+// ================================
+// IP LOGGING MIDDLEWARE
 // ================================
 app.use((req, res, next) => {
-  // Clean up IPv6 localhost
   let ip = req.clientIp || req.ip || 'unknown';
   if (ip === '::1' || ip === '::ffff:127.0.0.1') {
     ip = '127.0.0.1';
@@ -134,7 +119,6 @@ app.use((req, res, next) => {
     ip = ip.substring(7);
   }
   
-  // Log requests (comment out in production if too verbose)
   if (process.env.NODE_ENV === 'development') {
     console.log(`${req.method} ${req.path} from ${ip}`);
   }
@@ -153,7 +137,6 @@ const connectDB = async () => {
     );
     console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
     
-    // Start cron jobs after successful database connection
     startChimeVerificationJob();
     
   } catch (error) {
@@ -165,6 +148,36 @@ const connectDB = async () => {
 connectDB();
 
 // ================================
+// DEBUG ROUTE — REMOVE AFTER FIXING
+// ================================
+app.get('/debug-paths', (req, res) => {
+  let files = [];
+  let imagesFiles = [];
+  const uploadsPath = '/app/public/uploads';
+  const imagesPath = '/app/public/uploads/images';
+
+  try {
+    files = fs.readdirSync(uploadsPath);
+  } catch(e) {
+    files = ['ERROR: ' + e.message];
+  }
+
+  try {
+    imagesFiles = fs.readdirSync(imagesPath);
+  } catch(e) {
+    imagesFiles = ['ERROR: ' + e.message];
+  }
+
+  res.json({
+    __dirname,
+    cwd: process.cwd(),
+    uploadsPath,
+    uploadsFiles: files,
+    imagesFiles,
+  });
+});
+
+// ================================
 // API ROUTES
 // ================================
 
@@ -173,7 +186,7 @@ app.post('/api/test-post', (req, res) => {
     success: true, 
     message: 'POST request working', 
     body: req.body,
-    ip: req.clientIp || req.ip // ✅ Test IP detection
+    ip: req.clientIp || req.ip
   });
 });
 
@@ -194,9 +207,6 @@ app.use('/api/payment', paymentRoutes);
 app.use('/api/cashout-rules', cashoutRulesRoutes);
 app.use('/api/unsubscribe', unsubscribeRoutes);
 
-// Static files
-app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
-
 // ================================
 // HEALTH CHECK
 // ================================
@@ -215,7 +225,7 @@ app.get('/health', (req, res) => {
     message: 'Server is running',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
-    requestIP: ip, // ✅ Show detected IP
+    requestIP: ip,
     headers: {
       'x-forwarded-for': req.headers['x-forwarded-for'] || null,
       'x-real-ip': req.headers['x-real-ip'] || null,
