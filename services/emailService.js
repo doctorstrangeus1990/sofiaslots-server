@@ -5,7 +5,7 @@ class EmailService {
   constructor() {
     this.transporter = null;
     this.initialized = false;
-    this.websiteUrl = process.env.CLIENT_URL || 'https://belucky.win';
+    this.websiteUrl = process.env.CLIENT_URL || 'https://sofiaslots.com';
     
     // Remove trailing slash if exists
     this.websiteUrl = this.websiteUrl.replace(/\/$/, '');
@@ -37,8 +37,8 @@ class EmailService {
   // Get sender info
   getSender() {
     return {
-      address: 'support@belucky.win',
-      name: 'Belucky Support'
+      address: 'support@sofiaslots.com',
+      name: 'Sofia Slots Support'
     };
   }
 
@@ -124,7 +124,7 @@ class EmailService {
 
     const config = {
       registration: {
-        subject: 'Verify Your Belucky Account',
+        subject: 'Verify Your Sofia Slots Account',
         title: 'Email Verification',
         message: 'Enter this code to verify your account and claim your welcome bonus.'
       },
@@ -158,7 +158,7 @@ class EmailService {
 <div style="background-color: #f5f5f5; padding: 40px 20px;">
   <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
     <div style="background: linear-gradient(135deg, #a855f7 0%, #7c3aed 100%); padding: 30px; text-align: center;">
-      <h1 style="margin: 0; color: #ffffff; font-size: 32px; font-weight: 700; letter-spacing: 1px;">BELUCKY</h1>
+      <h1 style="margin: 0; color: #ffffff; font-size: 32px; font-weight: 700; letter-spacing: 1px;">Sofia Slots</h1>
     </div>
     <div style="padding: 40px 30px; background-color: #ffffff;">
       <h2 style="margin: 0 0 15px 0; color: #111827; font-size: 28px; font-weight: 700; text-align: center;">${title}</h2>
@@ -169,12 +169,12 @@ class EmailService {
         <p style="margin: 10px 0 0 0; color: #7c3aed; font-size: 13px; font-weight: 500;">Valid for 10 minutes</p>
       </div>
       <div style="background-color: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px 20px; border-radius: 8px; margin: 0 auto; max-width: 500px;">
-        <p style="margin: 0; color: #92400e; font-size: 13px; line-height: 1.6;"><strong>Security Notice:</strong> Never share this code with anyone. Belucky will never ask for your verification code.</p>
+        <p style="margin: 0; color: #92400e; font-size: 13px; line-height: 1.6;"><strong>Security Notice:</strong> Never share this code with anyone. Sofia Slots will never ask for your verification code.</p>
       </div>
     </div>
     <div style="background-color: #f9fafb; padding: 30px; text-align: center; border-top: 1px solid #e5e7eb;">
-      <p style="margin: 0 0 15px 0; color: #6b7280; font-size: 14px;">Need help? Visit <a href="https://belucky.win" style="color: #7c3aed; text-decoration: none; font-weight: 500;">belucky.win</a> or contact us on <a href="https://www.facebook.com/belucky.win" style="color: #7c3aed; text-decoration: none; font-weight: 500;">Facebook</a></p>
-      <p style="margin: 15px 0 10px 0; color: #9ca3af; font-size: 12px;">© ${new Date().getFullYear()} Belucky.win - All rights reserved</p>
+      <p style="margin: 0 0 15px 0; color: #6b7280; font-size: 14px;">Need help? Visit <a href="https://sofiaslots.com" style="color: #7c3aed; text-decoration: none; font-weight: 500;">sofiaslots.com</a> or contact us on <a href="https://www.facebook.com/sofiaslots.com" style="color: #7c3aed; text-decoration: none; font-weight: 500;">Facebook</a></p>
+      <p style="margin: 15px 0 10px 0; color: #9ca3af; font-size: 12px;">© ${new Date().getFullYear()} sofiaslots.com - All rights reserved</p>
       <a href="${this.websiteUrl}/api/api/unsubscribe?email=${encodeURIComponent(email)}" style="color: #9ca3af; font-size: 11px; text-decoration: none;">Unsubscribe</a>
     </div>
   </div>
@@ -190,7 +190,7 @@ class EmailService {
       to: email,
       subject: subject,
       html: htmlContent,
-      text: `Your ${purpose} verification code is: ${otp}. Valid for 10 minutes. Never share this code. - Belucky.win`,
+      text: `Your ${purpose} verification code is: ${otp}. Valid for 10 minutes. Never share this code. - sofiaslots.com`,
       category: 'OTP Verification'
     };
 
@@ -249,7 +249,7 @@ body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'S
 <div class="wrapper">
   <div class="container">
     <div class="header">
-      <h1 class="brand-name">BELUCKY</h1>
+      <h1 class="brand-name">Sofia Slots</h1>
     </div>
     <div class="content">
       <h2 class="title">Reset Your Password</h2>
@@ -258,8 +258,8 @@ body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'S
       <p class="sub-message">If you didn't request this, please ignore this email<br>or contact support if you have concerns.</p>
     </div>
     <div class="footer">
-      <p class="footer-text">Need help? Visit <a href="https://belucky.win" class="footer-link">belucky.win</a> or contact us on <a href="https://www.facebook.com/belucky.win" class="footer-link">Facebook</a></p>
-      <p class="footer-copy">© ${new Date().getFullYear()} Belucky.win - All rights reserved</p>
+      <p class="footer-text">Need help? Visit <a href="https://sofiaslots.com" class="footer-link">sofiaslots.com</a> or contact us on <a href="https://www.facebook.com/sofiaslots.com" class="footer-link">Facebook</a></p>
+      <p class="footer-copy">© ${new Date().getFullYear()} sofiaslots.com - All rights reserved</p>
       <a href="${this.websiteUrl}/unsubscribe?email=${encodeURIComponent(email)}" class="unsubscribe">Unsubscribe</a>
     </div>
   </div>
@@ -273,7 +273,7 @@ body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'S
     const mailOptions = {
       from: sender,
       to: email,
-      subject: 'Reset Your Belucky Password',
+      subject: 'Reset Your Sofia Slots Password',
       html: htmlContent,
       category: 'Password Reset'
     };
@@ -332,7 +332,7 @@ body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'S
 <div class="wrapper">
   <div class="container">
     <div class="header">
-      <h1 class="brand-name">BELUCKY</h1>
+      <h1 class="brand-name">Sofia Slots</h1>
     </div>
     <div class="content">
       <h2 class="title">${title}</h2>
@@ -340,8 +340,8 @@ body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'S
       <a href="${buttonLink}" class="promo-button">${buttonText}</a>
     </div>
     <div class="footer">
-      <p class="footer-text">Need help? Visit <a href="https://belucky.win" class="footer-link">belucky.win</a> or contact us on <a href="https://www.facebook.com/belucky.win" class="footer-link">Facebook</a></p>
-      <p class="footer-copy">© ${new Date().getFullYear()} Belucky.win - All rights reserved</p>
+      <p class="footer-text">Need help? Visit <a href="https://sofiaslots.com" class="footer-link">sofiaslots.com</a> or contact us on <a href="https://www.facebook.com/sofiaslots.com" class="footer-link">Facebook</a></p>
+      <p class="footer-copy">© ${new Date().getFullYear()} sofiaslots.com - All rights reserved</p>
       <a href="${this.websiteUrl}/unsubscribe?email=${encodeURIComponent(email)}" class="unsubscribe">Unsubscribe</a>
     </div>
   </div>
