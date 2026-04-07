@@ -105,7 +105,14 @@ app.use(cookieParser());
 // ================================
 // STATIC FILES — BEFORE ROUTES
 // ================================
-app.use('/uploads', express.static('/app/public/uploads'));
+// ================================
+// STATIC FILES — BEFORE ROUTES
+// ================================
+app.use('/uploads', (req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Cross-Origin-Resource-Policy', 'cross-origin');
+    next();
+}, express.static('/app/public/uploads'));
 
 // ================================
 // IP LOGGING MIDDLEWARE
