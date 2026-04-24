@@ -405,7 +405,7 @@ class FireKirinController {
             "--enable-features=NetworkService,NetworkServiceInProcess",
             "--force-webrtc-ip-handling-policy=default_public_interface_only"
         ],
-        pipe: true,
+        // pipe: true,
         ignoreHTTPSErrors: true,
         defaultViewport: {
             width: 1312,
