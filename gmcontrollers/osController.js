@@ -490,247 +490,268 @@ class OrionStarsController {
         await this.checkAuthorization();
     }
 
-    async checkAuthorization() {
-        try {
-            // ⭐ Prevent multiple authorization attempts
-            if (this.isAuthorizing) {
-                this.log('Authorization already in progress, waiting...');
-                if (this.authorizationPromise) {
-                    await this.authorizationPromise;
-                }
-                return;
+// ─────────────────────────────────────────────────────────────
+// Replace checkAuthorization() in BOTH controllers
+// OrionStars URL  : https://orionstars.vip:8781/Store.aspx
+// FireKirin URL   : https://firekirin.xyz:8888/Store.aspx
+// Just swap the URLs below for each controller
+// ─────────────────────────────────────────────────────────────
+
+async checkAuthorization() {
+    try {
+        if (this.isAuthorizing) {
+            this.log('Authorization already in progress, waiting...');
+            if (this.authorizationPromise) {
+                await this.authorizationPromise;
+            }
+            return;
+        }
+
+        if (!this.page || this.page.isClosed()) {
+            throw new Error('Page is closed, cannot check authorization');
+        }
+
+        this.log('Checking authorization status...');
+
+        await this.page.goto(`https://orionstars.vip:8781/Store.aspx`, {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000  // ⭐ increased from 15000
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 3000)); // ⭐ increased from 1500
+
+        const currentPath = await this.page.evaluate(() => location.pathname);
+        this.log(`Landed on: ${currentPath}`);
+
+        if (currentPath === '/default.aspx') {
+            this.authorized = false;
+            this.log('Redirected to login page - need to authorize');
+
+            this.resetAuthRetryIfNeeded();
+
+            if (this.authRetryCount >= this.maxAuthRetries) {
+                throw new Error(`Max authorization attempts (${this.maxAuthRetries}) reached. Please wait a few minutes and refresh.`);
             }
 
-            if (!this.page || this.page.isClosed()) {
-                throw new Error('Page is closed, cannot check authorization');
-            }
+            this.authRetryCount++;
+            this.lastAuthAttempt = Date.now();
+            this.log(`Authorization attempt ${this.authRetryCount}/${this.maxAuthRetries}`);
 
-            this.log('Checking authorization status...');
-            
-            await this.page.goto(`https://orionstars.vip:8781/Store.aspx`, {
-                waitUntil: 'domcontentloaded',
-                timeout: 15000
-            });
+            await this.authorize();
 
-            // Wait a moment for any redirect
-            await new Promise(resolve => setTimeout(resolve, 1500));
+            this.authRetryCount = 0;
+            return;
 
-            const currentPath = await this.page.evaluate(() => location.pathname);
-            this.log(`Landed on: ${currentPath}`);
+        } else {
+            this.log('On Store.aspx, verifying iframe...');
 
-            if (currentPath === '/default.aspx') {
-                this.authorized = false;
-                this.log('Redirected to login page - need to authorize');
-                
-                // ⭐ ADD RETRY LIMIT CHECK
-                this.resetAuthRetryIfNeeded();
-                
-                if (this.authRetryCount >= this.maxAuthRetries) {
-                    throw new Error(`Max authorization attempts (${this.maxAuthRetries}) reached. Please wait a few minutes and refresh.`);
+            // ⭐ Step 1 — wait for iframe element
+            await this.page.waitForSelector('#frm_main_content', { timeout: 20000 });
+
+            // ⭐ Step 2 — extra buffer for Railway's slower network
+            await new Promise(resolve => setTimeout(resolve, 3000));
+
+            // ⭐ Step 3 — just check readyState, don't require #txtSearch
+            await this.page.waitForFunction(() => {
+                const iframe = document.querySelector('#frm_main_content');
+                if (!iframe) return false;
+                try {
+                    const doc = iframe.contentWindow.document;
+                    return doc && doc.readyState === 'complete';
+                } catch (e) {
+                    return false;
                 }
-                
-                this.authRetryCount++;
-                this.lastAuthAttempt = Date.now();
-                this.log(`Authorization attempt ${this.authRetryCount}/${this.maxAuthRetries}`);
-                
-                // Call authorize and wait for it to complete
-                await this.authorize();
-                
-                // ⭐ RESET ON SUCCESS
-                this.authRetryCount = 0;
-                return;
-            } else {
-                this.log('On Store.aspx, verifying iframe...');
-                
-                // Wait for iframe to be ready
-                await this.page.waitForSelector('#frm_main_content', { timeout: 10000 });
-                
-                // Wait for iframe content to be accessible
+            }, { timeout: 30000 }); // ⭐ increased from 10000
+
+            // ⭐ Step 4 — now check for #txtSearch separately with its own timeout
+            try {
                 await this.page.waitForFunction(() => {
                     const iframe = document.querySelector('#frm_main_content');
                     if (!iframe) return false;
-                    
                     try {
-                        const iframe_document = iframe.contentWindow.document;
-                        if (!iframe_document) return false;
-                        
-                        const hasContent = iframe_document.querySelector('#txtSearch') !== null;
-                        return iframe_document.readyState === 'complete' && hasContent;
+                        return iframe.contentWindow.document.querySelector('#txtSearch') !== null;
                     } catch (e) {
                         return false;
                     }
-                }, { timeout: 10000 });
-                
-                this.log('✅ Already authorized - iframe ready');
-                this.authorized = true;
-                
-                // ⭐ RESET RETRY COUNTER ON SUCCESS
-                this.authRetryCount = 0;
-                
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                return true;
+                }, { timeout: 15000 });
+            } catch (e) {
+                // ⭐ txtSearch not found but iframe loaded — log and continue anyway
+                this.log('⚠️ #txtSearch not found in iframe but continuing (Railway slowness)');
             }
-        } catch (error) {
-            this.error(`Error checking authorization: ${error.message}`);
-            this.authorized = false;
-            throw error; // ⭐ Don't retry, just throw
+
+            this.log('✅ Already authorized - iframe ready');
+            this.authorized = true;
+            this.authRetryCount = 0;
+
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            return true;
         }
+    } catch (error) {
+        this.error(`Error checking authorization: ${error.message}`);
+        this.authorized = false;
+        throw error;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Replace authorize() in BOTH controllers
+// ─────────────────────────────────────────────────────────────
+
+async authorize() {
+    if (this.authorizationInProgress) {
+        throw new Error('Authorization already in progress');
     }
 
-    async authorize() {
-        if (this.authorizationInProgress) {
-            throw new Error('Authorization already in progress');
+    this.resetAuthRetryIfNeeded();
+
+    if (this.authRetryCount >= this.maxAuthRetries) {
+        throw new Error(`Max authorization attempts (${this.maxAuthRetries}) reached. Please wait ${Math.ceil(this.authResetInterval / 60000)} minutes.`);
+    }
+
+    this.authorizationInProgress = true;
+    this.isAuthorizing = true;
+
+    try {
+        this.log('Starting authorization...');
+
+        if (!this.page || this.page.isClosed()) {
+            throw new Error('Page is invalid, cannot authorize');
         }
 
-        // ⭐ CHECK RETRY LIMIT AT START
-        this.resetAuthRetryIfNeeded();
-        
-        if (this.authRetryCount >= this.maxAuthRetries) {
-            throw new Error(`Max authorization attempts (${this.maxAuthRetries}) reached. Please wait ${Math.ceil(this.authResetInterval / 60000)} minutes.`);
+        await this.page.goto(`https://orionstars.vip:8781/default.aspx`, {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000  // ⭐ increased from 15000
+        });
+
+        await Promise.all([
+            this.page.waitForSelector('#txtLoginName',  { timeout: 15000 }),
+            this.page.waitForSelector('#txtLoginPass',  { timeout: 15000 }),
+            this.page.waitForSelector('#txtVerifyCode', { timeout: 15000 }),
+            this.page.waitForSelector('#ImageCheck',    { timeout: 15000 })
+        ]);
+
+        if (!this.agentCredentials) {
+            const loaded = await this.loadAgentCredentials();
+            if (!loaded) throw new Error('Cannot authorize without agent credentials');
         }
 
-        this.authorizationInProgress = true;
-        this.isAuthorizing = true;
-        
-        try {
-            this.log('Starting authorization...');
-            
-            if (!this.page || this.page.isClosed()) {
-                throw new Error('Page is invalid, cannot authorize');
+        this.log(`Using agent credentials: ${this.agentCredentials.username}`);
+
+        await this.page.evaluate(() => {
+            document.querySelector('#txtLoginName').value = '';
+            document.querySelector('#txtLoginPass').value = '';
+        });
+
+        await this.page.type('#txtLoginName', this.agentCredentials.username);
+        await this.page.type('#txtLoginPass', this.agentCredentials.password);
+
+        await this.page.waitForSelector('#ImageCheck', { timeout: 15000 });
+
+        await this.page.waitForFunction(() => {
+            const img = document.querySelector('#ImageCheck');
+            return img && img.complete && img.naturalHeight !== 0;
+        }, { timeout: 15000 });
+
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        const base64Captcha = await this.page.evaluate(() => {
+            const img = document.querySelector('#ImageCheck');
+            if (!img || !img.complete || img.naturalHeight === 0) {
+                throw new Error('Captcha image not loaded');
             }
+            const canvas = document.createElement('canvas');
+            canvas.width  = img.naturalWidth  || 132;
+            canvas.height = img.naturalHeight || 40;
+            canvas.getContext('2d').drawImage(img, 0, 0);
+            return canvas.toDataURL("image/png").replace(/^data:image\/?[A-z]*;base64,/, "");
+        });
 
-            await this.page.goto(`https://orionstars.vip:8781/default.aspx`, {
-                waitUntil: 'domcontentloaded',
-                timeout: 15000
-            });
+        if (!base64Captcha || base64Captcha.length < 100) {
+            throw new Error('Failed to capture captcha image');
+        }
 
-            await Promise.all([
-                this.page.waitForSelector('#txtLoginName', { timeout: 10000 }),
-                this.page.waitForSelector('#txtLoginPass', { timeout: 10000 }),
-                this.page.waitForSelector('#txtVerifyCode', { timeout: 10000 }),
-                this.page.waitForSelector('#ImageCheck', { timeout: 10000 })
-            ]);
+        const captchaValue = await Captcha(base64Captcha, 5);
+        if (!captchaValue) throw new Error('Failed to solve captcha');
 
-            if (!this.agentCredentials) {
-                const credentialsLoaded = await this.loadAgentCredentials();
-                if (!credentialsLoaded) {
-                    throw new Error('Cannot authorize without agent credentials');
-                }
-            }
+        this.log(`Captcha solved: ${captchaValue}`);
 
-            this.log(`Using agent credentials: ${this.agentCredentials.username}`);
-            
-            // Clear and type credentials
-            await this.page.evaluate(() => {
-                document.querySelector('#txtLoginName').value = '';
-                document.querySelector('#txtLoginPass').value = '';
-            });
-            
-            await this.page.type('#txtLoginName', this.agentCredentials.username);
-            await this.page.type('#txtLoginPass', this.agentCredentials.password);
+        await this.page.type('#txtVerifyCode', captchaValue);
+        await this.page.click('#btnLogin');
 
-            await this.page.waitForSelector('#ImageCheck', { timeout: 10000 });
-            
-            // Wait for captcha image to fully load
+        await new Promise(resolve => setTimeout(resolve, 3000)); // ⭐ increased from 2000
+
+        const error_message = await this.page.evaluate(() => {
+            const el = document.querySelector('#mb_con p');
+            return el ? el.innerText : false;
+        });
+
+        if (error_message) {
+            this.error(`Error while login: ${error_message}`);
+            throw new Error(`Login failed: ${error_message}`);
+        }
+
+        const is_authorized = await this.page.evaluate(() => location.pathname === '/Store.aspx');
+
+        if (is_authorized) {
+            this.authorized = true;
+            this.log('✅ Successfully authorized');
+            this.authRetryCount = 0;
+
+            await this.saveCookies();
+
+            this.log('Waiting for Store.aspx iframe to be ready...');
+
+            // ⭐ Step 1
+            await this.page.waitForSelector('#frm_main_content', { timeout: 20000 });
+
+            // ⭐ Step 2 — buffer
+            await new Promise(resolve => setTimeout(resolve, 3000));
+
+            // ⭐ Step 3 — readyState only
             await this.page.waitForFunction(() => {
-                const img = document.querySelector('#ImageCheck');
-                return img && img.complete && img.naturalHeight !== 0;
-            }, { timeout: 10000 });
-
-            await new Promise(resolve => setTimeout(resolve, 500));
-
-            const base64Captcha = await this.page.evaluate(() => {
-                const img = document.querySelector('#ImageCheck');
-                if (!img || !img.complete || img.naturalHeight === 0) {
-                    throw new Error('Captcha image not loaded');
+                const iframe = document.querySelector('#frm_main_content');
+                if (!iframe) return false;
+                try {
+                    const doc = iframe.contentWindow.document;
+                    return doc && doc.readyState === 'complete';
+                } catch (e) {
+                    return false;
                 }
-                
-                const canvas = document.createElement('canvas');
-                canvas.width = img.naturalWidth || 132;
-                canvas.height = img.naturalHeight || 40;
-                const context = canvas.getContext('2d');
-                context.drawImage(img, 0, 0);
-                return canvas.toDataURL("image/png").replace(/^data:image\/?[A-z]*;base64,/, "");
-            });
+            }, { timeout: 30000 }); // ⭐ increased from 10000
 
-            if (!base64Captcha || base64Captcha.length < 100) {
-                throw new Error('Failed to capture captcha image');
+            // ⭐ Step 4 — #txtSearch separately, non-fatal
+            try {
+                await this.page.waitForFunction(() => {
+                    const iframe = document.querySelector('#frm_main_content');
+                    if (!iframe) return false;
+                    try {
+                        return iframe.contentWindow.document.querySelector('#txtSearch') !== null;
+                    } catch (e) {
+                        return false;
+                    }
+                }, { timeout: 15000 });
+                this.log('Store.aspx iframe is fully loaded and ready');
+            } catch (e) {
+                this.log('⚠️ #txtSearch not found after login but iframe is complete — continuing');
             }
-
-            const captchaValue = await Captcha(base64Captcha, 5);
-            
-            if (!captchaValue) {
-                throw new Error('Failed to solve captcha');
-            }
-            
-            this.log(`Captcha solved: ${captchaValue}`);
-            
-            await this.page.type('#txtVerifyCode', captchaValue);
-            await this.page.click('#btnLogin');
 
             await new Promise(resolve => setTimeout(resolve, 2000));
 
-            const error_message = await this.page.evaluate(() => {
-                const element = document.querySelector('#mb_con p');
-                if (!element) return false;
-                return element.innerText;
-            });
-
-            if (error_message) {
-                this.error(`Error while login: ${error_message}`);
-                throw new Error(`Login failed: ${error_message}`);
-            }
-
-            const is_authorized = await this.page.evaluate(() => {
-                return location.pathname === '/Store.aspx';
-            });
-
-            if (is_authorized) {
-                this.authorized = true;
-                this.log('✅ Successfully authorized');
-                
-                // ⭐ RESET RETRY COUNTER ON SUCCESS
-                this.authRetryCount = 0;
-                
-                await this.saveCookies();
-                
-                // Wait for iframe before continuing
-                this.log('Waiting for Store.aspx iframe to be ready...');
-                await this.page.waitForSelector('#frm_main_content', { timeout: 10000 });
-                
-                // Wait for iframe content to be accessible
-                await this.page.waitForFunction(() => {
-                    const iframe = document.querySelector('#frm_main_content');
-                    if (!iframe) return false;
-                    
-                    try {
-                        const iframe_document = iframe.contentWindow.document;
-                        if (!iframe_document) return false;
-                        
-                        const hasContent = iframe_document.querySelector('#txtSearch') !== null;
-                        return iframe_document.readyState === 'complete' && hasContent;
-                    } catch (e) {
-                        return false;
-                    }
-                }, { timeout: 10000 });
-                
-                this.log('Store.aspx iframe is fully loaded and ready');
-                await new Promise(resolve => setTimeout(resolve, 2000));
-            } else {
-                this.log('Failed login - not redirected to Store.aspx');
-                throw new Error('Login failed - no redirect');
-            }
-            
-        } catch (error) {
-            this.error(`Error during authorization: ${error.message}`);
-            this.authorized = false;
-            throw error; // ⭐ Don't retry, just throw
-        } finally {
-            this.authorizationInProgress = false;
-            this.isAuthorizing = false;
-            this.authorizationPromise = null;
+        } else {
+            this.log('Failed login - not redirected to Store.aspx');
+            throw new Error('Login failed - no redirect');
         }
+
+    } catch (error) {
+        this.error(`Error during authorization: ${error.message}`);
+        this.authorized = false;
+        throw error;
+    } finally {
+        this.authorizationInProgress = false;
+        this.isAuthorizing = false;
+        this.authorizationPromise = null;
     }
+}
 
     async saveCookies() {
         try {
