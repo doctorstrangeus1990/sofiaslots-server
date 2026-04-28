@@ -79,8 +79,8 @@ class VBlinkController {
                 this.apiConfig.appsecret = game.metadata.appsecret;
             } else {
                 // HARDCODED FALLBACK - Replace with actual values
-                this.apiConfig.appid = 'HafJHPjxaSj6oo69cf6';
-                this.apiConfig.appsecret = 'Zc6LLgXgKTgruzZqiQZmmsqBlee8';
+                this.apiConfig.appid = 'mf0IChecUllYmr13x107';
+                this.apiConfig.appsecret = 'k00CFbXeNVcQkfihkjHifuonxx4d4';
                 this.log('⚠️ Using hardcoded API credentials - update game.metadata in DB');
             }
 

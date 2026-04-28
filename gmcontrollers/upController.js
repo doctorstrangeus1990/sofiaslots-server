@@ -79,8 +79,8 @@ class UltraPandaController {
                 this.apiConfig.appsecret = game.metadata.appsecret;
             } else {
                 // HARDCODED FALLBACK - Replace with actual values
-                this.apiConfig.appid = 'S37KZgkyLiyr63A45f2';
-                this.apiConfig.appsecret = 'i4cEUHasaaa2znkhZTp3textu236';
+                this.apiConfig.appid = 'E85FQjIdFYbhYXz11d39';
+                this.apiConfig.appsecret = 'E52GOhYfFlPhmjbTmsXk1l3m1zdb7';
                 this.log('⚠️ Using hardcoded API credentials - update game.metadata in DB');
             }
 
