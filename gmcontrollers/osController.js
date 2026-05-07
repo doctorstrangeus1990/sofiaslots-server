@@ -360,9 +360,8 @@ class OrionStarsController {
     }
 
     async createBrowser() {
-        this.log('Initializing browser for OrionStars...');
+        this.log('Initializing browser for Firekirin...');
         
-        // Clean up existing browser
         if (this.browser) {
             try {
                 this.browser.removeAllListeners('disconnected');
@@ -378,10 +377,16 @@ class OrionStarsController {
             this.browser = null;
             this.page = null;
         }
-
+    
+        // ⭐ STATIC PROXY CONFIGURATION
+        const PROXY_SERVER = 'http://66.93.166.154:59100';
+        const PROXY_USERNAME = 'Pablopicus69';
+        const PROXY_PASSWORD = 'Duvm9R3ZkI';
+    
         this.browser = await Puppeteer.launch({
             headless: 'new',
             args: [
+                `--proxy-server=${PROXY_SERVER}`, // ⭐ PROXY ADDED HERE
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
@@ -411,16 +416,25 @@ class OrionStarsController {
                 "--enable-features=NetworkService,NetworkServiceInProcess",
                 "--force-webrtc-ip-handling-policy=default_public_interface_only"
             ],
-            pipe: true,
+            // pipe: true,
             ignoreHTTPSErrors: true,
             defaultViewport: {
                 width: 1312,
                 height: 800
             }
         });
-
+    
+        this.log(`Using proxy: ${PROXY_SERVER}`);
+    
         const pages = await this.browser.pages();
         this.page = pages[0] || await this.browser.newPage();
+        
+        // ⭐ AUTHENTICATE PROXY
+        await this.page.authenticate({
+            username: PROXY_USERNAME,
+            password: PROXY_PASSWORD
+        });
+        this.log('Proxy authentication configured');
         
         await this.page.setRequestInterception(true);
         
@@ -428,7 +442,7 @@ class OrionStarsController {
             if (req.isInterceptResolutionHandled()) {
                 return;
             }
-
+    
             const resourceType = req.resourceType();
             const url = req.url();
             
@@ -447,25 +461,22 @@ class OrionStarsController {
                 req.continue().catch(() => {});
             }
         });
-
-        // Handle page errors
+    
         this.page.on('error', (error) => {
             this.error(`Page crashed: ${error.message}`);
             this.browserReady = false;
             this.initialized = false;
         });
-
-        // Handle page close
+    
         this.page.on('close', () => {
             this.log('Page closed unexpectedly');
             this.browserReady = false;
             this.initialized = false;
         });
-
+    
         await this.page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-
-        // Load cookies
-        const cookiesPath = path.join(__dirname, 'cookiesos.json');
+    
+        const cookiesPath = path.join(__dirname, 'cookiesfk.json');
         if (existsSync(cookiesPath)) {
             try {
                 const cookies = readFileSync(cookiesPath).toString();
@@ -476,8 +487,7 @@ class OrionStarsController {
                 this.log('Error loading cookies, continuing without them');
             }
         }
-
-        // Handle browser disconnect
+    
         this.browser.once('disconnected', () => {
             this.log('Browser disconnected');
             this.browser = null;
@@ -486,7 +496,7 @@ class OrionStarsController {
             this.browserReady = false;
             this.authorized = false;
         });
-
+    
         await this.checkAuthorization();
     }
 
