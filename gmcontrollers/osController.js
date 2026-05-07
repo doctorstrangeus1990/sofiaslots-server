@@ -359,146 +359,147 @@ class OrionStarsController {
         }
     }
 
-    async createBrowser() {
-        this.log('Initializing browser for Firekirin...');
-        
-        if (this.browser) {
-            try {
-                this.browser.removeAllListeners('disconnected');
-                if (this.page) {
-                    this.page.removeAllListeners('error');
-                    this.page.removeAllListeners('request');
-                    this.page.removeAllListeners('close');
-                }
-                await this.browser.close();
-            } catch (e) {
-                this.log(`Error closing existing browser: ${e.message}`);
+   async createBrowser() {
+    this.log('Initializing browser for OrionStars...');
+    
+    if (this.browser) {
+        try {
+            this.browser.removeAllListeners('disconnected');
+            if (this.page) {
+                this.page.removeAllListeners('error');
+                this.page.removeAllListeners('request');
+                this.page.removeAllListeners('close');
             }
-            this.browser = null;
-            this.page = null;
+            await this.browser.close();
+        } catch (e) {
+            this.log(`Error closing existing browser: ${e.message}`);
         }
-    
-        // ⭐ STATIC PROXY CONFIGURATION
-        const PROXY_SERVER = 'http://66.93.166.154:59100';
-        const PROXY_USERNAME = 'Pablopicus69';
-        const PROXY_PASSWORD = 'Duvm9R3ZkI';
-    
-        this.browser = await Puppeteer.launch({
-            headless: 'new',
-            args: [
-                `--proxy-server=${PROXY_SERVER}`, // ⭐ PROXY ADDED HERE
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-web-security",
-                "--disable-features=VizDisplayCompositor",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-background-timer-throttling",
-                "--disable-backgrounding-occluded-windows",
-                "--disable-renderer-backgrounding",
-                "--disable-background-networking",
-                "--disable-breakpad",
-                "--disable-component-extensions-with-background-pages",
-                "--disable-extensions",
-                "--disable-features=TranslateUI",
-                "--disable-ipc-flooding-protection",
-                "--disable-hang-monitor",
-                "--disable-prompt-on-repost",
-                "--disable-sync",
-                "--force-color-profile=srgb",
-                "--metrics-recording-only",
-                "--enable-automation",
-                "--password-store=basic",
-                "--use-mock-keychain",
-                "--disable-blink-features=AutomationControlled",
-                "--enable-features=NetworkService,NetworkServiceInProcess",
-                "--force-webrtc-ip-handling-policy=default_public_interface_only"
-            ],
-            // pipe: true,
-            ignoreHTTPSErrors: true,
-            defaultViewport: {
-                width: 1312,
-                height: 800
-            }
-        });
-    
-        this.log(`Using proxy: ${PROXY_SERVER}`);
-    
-        const pages = await this.browser.pages();
-        this.page = pages[0] || await this.browser.newPage();
-        
-        // ⭐ AUTHENTICATE PROXY
-        await this.page.authenticate({
-            username: PROXY_USERNAME,
-            password: PROXY_PASSWORD
-        });
-        this.log('Proxy authentication configured');
-        
-        await this.page.setRequestInterception(true);
-        
-        this.page.on('request', (req) => {
-            if (req.isInterceptResolutionHandled()) {
-                return;
-            }
-    
-            const resourceType = req.resourceType();
-            const url = req.url();
-            
-            if (url.includes('/default.aspx') || 
-                url.includes('ImageCheck') || 
-                url.includes('VerifyCode') || 
-                url.includes('captcha') ||
-                url.includes('.aspx')) {
-                req.continue().catch(() => {});
-                return;
-            }
-            
-            if (['stylesheet', 'font', 'media'].includes(resourceType)) {
-                req.abort().catch(() => {});
-            } else {
-                req.continue().catch(() => {});
-            }
-        });
-    
-        this.page.on('error', (error) => {
-            this.error(`Page crashed: ${error.message}`);
-            this.browserReady = false;
-            this.initialized = false;
-        });
-    
-        this.page.on('close', () => {
-            this.log('Page closed unexpectedly');
-            this.browserReady = false;
-            this.initialized = false;
-        });
-    
-        await this.page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-    
-        const cookiesPath = path.join(__dirname, 'cookiesfk.json');
-        if (existsSync(cookiesPath)) {
-            try {
-                const cookies = readFileSync(cookiesPath).toString();
-                const cookies_parsed = JSON.parse(cookies);
-                await this.page.setCookie(...cookies_parsed);
-                this.log('Cookies loaded successfully');
-            } catch (error) {
-                this.log('Error loading cookies, continuing without them');
-            }
-        }
-    
-        this.browser.once('disconnected', () => {
-            this.log('Browser disconnected');
-            this.browser = null;
-            this.page = null;
-            this.initialized = false;
-            this.browserReady = false;
-            this.authorized = false;
-        });
-    
-        await this.checkAuthorization();
+        this.browser = null;
+        this.page = null;
     }
+
+    // ⭐ PROXY CONFIGURATION (same as FK/PM)
+    const PROXY_SERVER = 'http://66.93.166.154:59100';
+    const PROXY_USERNAME = 'Pablopicus69';
+    const PROXY_PASSWORD = 'Duvm9R3ZkI';
+
+    this.browser = await Puppeteer.launch({
+        headless: 'new',
+        args: [
+            `--proxy-server=${PROXY_SERVER}`,
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-web-security",
+            "--disable-features=VizDisplayCompositor",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-background-networking",
+            "--disable-breakpad",
+            "--disable-component-extensions-with-background-pages",
+            "--disable-extensions",
+            "--disable-features=TranslateUI",
+            "--disable-ipc-flooding-protection",
+            "--disable-hang-monitor",
+            "--disable-prompt-on-repost",
+            "--disable-sync",
+            "--force-color-profile=srgb",
+            "--metrics-recording-only",
+            "--enable-automation",
+            "--password-store=basic",
+            "--use-mock-keychain",
+            "--disable-blink-features=AutomationControlled",
+            "--enable-features=NetworkService,NetworkServiceInProcess",
+            "--force-webrtc-ip-handling-policy=default_public_interface_only"
+        ],
+        // pipe: true,
+        ignoreHTTPSErrors: true,
+        defaultViewport: {
+            width: 1312,
+            height: 800
+        }
+    });
+
+    this.log(`Using proxy: ${PROXY_SERVER}`);
+
+    const pages = await this.browser.pages();
+    this.page = pages[0] || await this.browser.newPage();
+
+    // ⭐ AUTHENTICATE PROXY
+    await this.page.authenticate({
+        username: PROXY_USERNAME,
+        password: PROXY_PASSWORD
+    });
+    this.log('Proxy authentication configured');
+
+    await this.page.setRequestInterception(true);
+
+    this.page.on('request', (req) => {
+        if (req.isInterceptResolutionHandled()) {
+            return;
+        }
+
+        const resourceType = req.resourceType();
+        const url = req.url();
+
+        if (url.includes('/default.aspx') ||
+            url.includes('ImageCheck') ||
+            url.includes('VerifyCode') ||
+            url.includes('captcha') ||
+            url.includes('.aspx')) {
+            req.continue().catch(() => {});
+            return;
+        }
+
+        if (['stylesheet', 'font', 'media'].includes(resourceType)) {
+            req.abort().catch(() => {});
+        } else {
+            req.continue().catch(() => {});
+        }
+    });
+
+    this.page.on('error', (error) => {
+        this.error(`Page crashed: ${error.message}`);
+        this.browserReady = false;
+        this.initialized = false;
+    });
+
+    this.page.on('close', () => {
+        this.log('Page closed unexpectedly');
+        this.browserReady = false;
+        this.initialized = false;
+    });
+
+    await this.page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+
+    // ⭐ FIXED: was cookiesfk.json — now correctly cookiesos.json
+    const cookiesPath = path.join(__dirname, 'cookiesos.json');
+    if (existsSync(cookiesPath)) {
+        try {
+            const cookies = readFileSync(cookiesPath).toString();
+            const cookies_parsed = JSON.parse(cookies);
+            await this.page.setCookie(...cookies_parsed);
+            this.log('Cookies loaded successfully');
+        } catch (error) {
+            this.log('Error loading cookies, continuing without them');
+        }
+    }
+
+    this.browser.once('disconnected', () => {
+        this.log('Browser disconnected');
+        this.browser = null;
+        this.page = null;
+        this.initialized = false;
+        this.browserReady = false;
+        this.authorized = false;
+    });
+
+    await this.checkAuthorization();
+}
 
     async checkAuthorization() {
         try {
