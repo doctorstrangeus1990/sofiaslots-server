@@ -557,155 +557,164 @@ class MilkyWaysController {
 }
 
     async authorize() {
-        if (this.authorizationInProgress) {
-            throw new Error('Authorization already in progress');
+    if (this.authorizationInProgress) {
+        throw new Error('Authorization already in progress');
+    }
+
+    this.resetAuthRetryIfNeeded();
+    
+    if (this.authRetryCount >= this.maxAuthRetries) {
+        throw new Error(`Max authorization attempts (${this.maxAuthRetries}) reached. Please wait ${Math.ceil(this.authResetInterval / 60000)} minutes.`);
+    }
+
+    this.authorizationInProgress = true;
+    this.isAuthorizing = true;
+    
+    try {
+        this.log('Starting authorization...');
+        
+        if (!this.page || this.page.isClosed()) {
+            throw new Error('Page is invalid, cannot authorize');
         }
 
-        // ⭐ CHECK RETRY LIMIT AT START
-        this.resetAuthRetryIfNeeded();
-        
-        if (this.authRetryCount >= this.maxAuthRetries) {
-            throw new Error(`Max authorization attempts (${this.maxAuthRetries}) reached. Please wait ${Math.ceil(this.authResetInterval / 60000)} minutes.`);
+        await this.page.goto(`https://orionstars.vip:8781/default.aspx`, {
+            waitUntil: 'domcontentloaded',
+            timeout: 15000
+        });
+
+        await Promise.all([
+            this.page.waitForSelector('#txtLoginName', { timeout: 10000 }),
+            this.page.waitForSelector('#txtLoginPass', { timeout: 10000 }),
+            this.page.waitForSelector('#txtVerifyCode', { timeout: 10000 }),
+            this.page.waitForSelector('#ImageCheck', { timeout: 10000 })
+        ]);
+
+        if (!this.agentCredentials) {
+            const credentialsLoaded = await this.loadAgentCredentials();
+            if (!credentialsLoaded) {
+                throw new Error('Cannot authorize without agent credentials');
+            }
         }
 
-        this.authorizationInProgress = true;
-        this.isAuthorizing = true;
+        this.log(`Using agent credentials: ${this.agentCredentials.username}`);
         
-        try {
-            this.log('Starting authorization...');
-            
-            if (!this.page || this.page.isClosed()) {
-                throw new Error('Page is invalid, cannot authorize');
+        await this.page.evaluate(() => {
+            document.querySelector('#txtLoginName').value = '';
+            document.querySelector('#txtLoginPass').value = '';
+        });
+        
+        await this.page.type('#txtLoginName', this.agentCredentials.username);
+        await this.page.type('#txtLoginPass', this.agentCredentials.password);
+
+        await this.page.waitForSelector('#ImageCheck', { timeout: 10000 });
+        
+        await this.page.waitForFunction(() => {
+            const img = document.querySelector('#ImageCheck');
+            return img && img.complete && img.naturalHeight !== 0;
+        }, { timeout: 10000 });
+
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        const base64Captcha = await this.page.evaluate(() => {
+            const img = document.querySelector('#ImageCheck');
+            if (!img || !img.complete || img.naturalHeight === 0) {
+                throw new Error('Captcha image not loaded');
             }
+            const canvas = document.createElement('canvas');
+            canvas.width = img.naturalWidth || 132;
+            canvas.height = img.naturalHeight || 40;
+            const context = canvas.getContext('2d');
+            context.drawImage(img, 0, 0);
+            return canvas.toDataURL("image/png").replace(/^data:image\/?[A-z]*;base64,/, "");
+        });
 
-            await this.page.goto(`https://milkywayapp.xyz:8781/default.aspx`, {
-                waitUntil: 'domcontentloaded',
-                timeout: 15000
-            });
+        if (!base64Captcha || base64Captcha.length < 100) {
+            throw new Error('Failed to capture captcha image');
+        }
 
-            await Promise.all([
-                this.page.waitForSelector('#txtLoginName', { timeout: 10000 }),
-                this.page.waitForSelector('#txtLoginPass', { timeout: 10000 }),
-                this.page.waitForSelector('#txtVerifyCode', { timeout: 10000 }),
-                this.page.waitForSelector('#ImageCheck', { timeout: 10000 })
-            ]);
+        const captchaValue = await Captcha(base64Captcha, 5);
+        
+        if (!captchaValue) {
+            throw new Error('Failed to solve captcha');
+        }
+        
+        this.log(`Captcha solved: ${captchaValue}`);
+        
+        await this.page.type('#txtVerifyCode', captchaValue);
+        await this.page.click('#btnLogin');
 
-            if (!this.agentCredentials) {
-                const credentialsLoaded = await this.loadAgentCredentials();
-                if (!credentialsLoaded) {
-                    throw new Error('Cannot authorize without agent credentials');
-                }
-            }
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
-            this.log(`Using agent credentials: ${this.agentCredentials.username}`);
+        const error_message = await this.page.evaluate(() => {
+            const element = document.querySelector('#mb_con p');
+            if (!element) return false;
+            return element.innerText;
+        });
+
+        if (error_message) {
+            this.error(`Error while login: ${error_message}`);
+            throw new Error(`Login failed: ${error_message}`);
+        }
+
+        const is_authorized = await this.page.evaluate(() => {
+            return location.pathname === '/Store.aspx';
+        });
+
+        if (is_authorized) {
+            this.authorized = true;
+            this.log('✅ Successfully authorized');
+            this.authRetryCount = 0;
             
-            await this.page.evaluate(() => {
-                document.querySelector('#txtLoginName').value = '';
-                document.querySelector('#txtLoginPass').value = '';
-            });
+            await this.saveCookies();
             
-            await this.page.type('#txtLoginName', this.agentCredentials.username);
-            await this.page.type('#txtLoginPass', this.agentCredentials.password);
+            // ⭐ Wait for iframe element
+            this.log('Waiting for Store.aspx iframe to be ready...');
+            await this.page.waitForSelector('#frm_main_content', { timeout: 10000 });
 
-            await this.page.waitForSelector('#ImageCheck', { timeout: 10000 });
-            
+            // ⭐ Extra buffer for proxy latency
+            await new Promise(resolve => setTimeout(resolve, 3000));
+
+            // ⭐ Just check iframe src — avoid contentWindow.document (cross-origin throws)
             await this.page.waitForFunction(() => {
-                const img = document.querySelector('#ImageCheck');
-                return img && img.complete && img.naturalHeight !== 0;
+                const iframe = document.querySelector('#frm_main_content');
+                if (!iframe) return false;
+                return iframe.src && iframe.src.length > 0;
             }, { timeout: 10000 });
 
-            await new Promise(resolve => setTimeout(resolve, 500));
-
-            const base64Captcha = await this.page.evaluate(() => {
-                const img = document.querySelector('#ImageCheck');
-                if (!img || !img.complete || img.naturalHeight === 0) {
-                    throw new Error('Captcha image not loaded');
-                }
-                
-                const canvas = document.createElement('canvas');
-                canvas.width = img.naturalWidth || 132;
-                canvas.height = img.naturalHeight || 40;
-                const context = canvas.getContext('2d');
-                context.drawImage(img, 0, 0);
-                return canvas.toDataURL("image/png").replace(/^data:image\/?[A-z]*;base64,/, "");
-            });
-
-            if (!base64Captcha || base64Captcha.length < 100) {
-                throw new Error('Failed to capture captcha image');
-            }
-
-            const captchaValue = await Captcha(base64Captcha, 5);
-            
-            if (!captchaValue) {
-                throw new Error('Failed to solve captcha');
-            }
-            
-            this.log(`Captcha solved: ${captchaValue}`);
-            
-            await this.page.type('#txtVerifyCode', captchaValue);
-            await this.page.click('#btnLogin');
-
-            await new Promise(resolve => setTimeout(resolve, 2000));
-
-            const error_message = await this.page.evaluate(() => {
-                const element = document.querySelector('#mb_con p');
-                if (!element) return false;
-                return element.innerText;
-            });
-
-            if (error_message) {
-                this.error(`Error while login: ${error_message}`);
-                throw new Error(`Login failed: ${error_message}`);
-            }
-
-            const is_authorized = await this.page.evaluate(() => {
-                return location.pathname === '/Store.aspx';
-            });
-
-            if (is_authorized) {
-                this.authorized = true;
-                this.log('✅ Successfully authorized');
-                
-                // ⭐ RESET RETRY COUNTER ON SUCCESS
-                this.authRetryCount = 0;
-                
-                await this.saveCookies();
-                
-                this.log('Waiting for Store.aspx iframe to be ready...');
-                await this.page.waitForSelector('#frm_main_content', { timeout: 10000 });
-                
+            // ⭐ Try #txtSearch but non-fatal if cross-origin blocks it
+            try {
                 await this.page.waitForFunction(() => {
-                    const iframe = document.querySelector('#frm_main_content');
-                    if (!iframe) return false;
-                    
                     try {
-                        const iframe_document = iframe.contentWindow.document;
-                        if (!iframe_document) return false;
-                        
-                        const hasContent = iframe_document.querySelector('#txtSearch') !== null;
-                        return iframe_document.readyState === 'complete' && hasContent;
+                        const iframe = document.querySelector('#frm_main_content');
+                        if (!iframe) return false;
+                        const doc = iframe.contentWindow.document;
+                        return doc && doc.querySelector('#txtSearch') !== null;
                     } catch (e) {
-                        return false;
+                        return true; // Cross-origin — assume ready
                     }
                 }, { timeout: 10000 });
-                
-                this.log('Store.aspx iframe is fully loaded and ready');
-                await new Promise(resolve => setTimeout(resolve, 2000));
-            } else {
-                this.log('Failed login - not redirected to Store.aspx');
-                throw new Error('Login failed - no redirect');
+            } catch (e) {
+                this.log('⚠️ Could not verify #txtSearch — continuing anyway');
             }
-            
-        } catch (error) {
-            this.error(`Error during authorization: ${error.message}`);
-            this.authorized = false;
-            throw error; // ⭐ Don't retry, just throw
-        } finally {
-            this.authorizationInProgress = false;
-            this.isAuthorizing = false;
-            this.authorizationPromise = null;
+
+            this.log('Store.aspx iframe is fully loaded and ready');
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
+        } else {
+            this.log('Failed login - not redirected to Store.aspx');
+            throw new Error('Login failed - no redirect');
         }
+        
+    } catch (error) {
+        this.error(`Error during authorization: ${error.message}`);
+        this.authorized = false;
+        throw error;
+    } finally {
+        this.authorizationInProgress = false;
+        this.isAuthorizing = false;
+        this.authorizationPromise = null;
     }
+}
 
     async saveCookies() {
         try {
@@ -1364,228 +1373,218 @@ class MilkyWaysController {
     }
 
     async createAccount({ id, userId }) {
-        console.log('🔴 CREATE ACCOUNT START:', { id, userId });
+    console.log('🔴 CREATE ACCOUNT START:', { id, userId });
+    
+    try {
+        await this.ensureBrowserReady();
         
+        const generateRandomString = () => {
+            const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+            let result = '';
+            for (let i = 0; i < 4; i++) {
+                result += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return result;
+        };
+        
+        const login = `bc${generateRandomString()}_${generateRandomString()}`;
+        const password = `bc${generateRandomString()}_${generateRandomString()}`;
+        
+        console.log(`Generated credentials - Login: ${login}, Password: ${password}`);
+
+        console.log('Step 1: Checking page state...');
+        const currentPath = await this.page.evaluate(() => location.pathname);
+        console.log('Current path:', currentPath);
+        
+        if (currentPath === '/default.aspx') {
+            throw new Error('Session expired. Please refresh the page.');
+        }
+        console.log('✅ On correct page');
+
+        // ⭐ STEP 2: FIXED — cross-origin safe iframe check
+        console.log('Step 2: Waiting for main iframe to be ready...');
+        await this.page.waitForSelector('#frm_main_content', { timeout: 10000 });
+
+        await new Promise(resolve => setTimeout(resolve, 2000)); // buffer for proxy
+
+        await this.page.waitForFunction(() => {
+            const iframe = document.querySelector('#frm_main_content');
+            if (!iframe) return false;
+            return iframe.src && iframe.src.length > 0;
+        }, { timeout: 10000 });
+
         try {
-            await this.ensureBrowserReady();
-            
-            const generateRandomString = () => {
-                const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-                let result = '';
-                for (let i = 0; i < 4; i++) {
-                    result += chars.charAt(Math.floor(Math.random() * chars.length));
-                }
-                return result;
-            };
-            
-            const login = `bc${generateRandomString()}_${generateRandomString()}`;
-            const password = `bc${generateRandomString()}_${generateRandomString()}`;
-            
-            console.log(`Generated credentials - Login: ${login}, Password: ${password}`);
-
-            console.log('Step 1: Checking page state...');
-            const currentPath = await this.page.evaluate(() => location.pathname);
-            console.log('Current path:', currentPath);
-            
-            if (currentPath === '/default.aspx') {
-                throw new Error('Session expired. Please refresh the page.');
-            }
-            console.log('✅ On correct page');
-
-            console.log('Step 2: Waiting for main iframe to be ready...');
-            await this.page.waitForSelector('#frm_main_content', { timeout: 10000 });
-            
             await this.page.waitForFunction(() => {
-                const iframe = document.querySelector('#frm_main_content');
-                if (!iframe) return false;
-                
                 try {
-                    const iframe_document = iframe.contentWindow.document;
-                    if (!iframe_document) return false;
-                    
-                    const hasContent = iframe_document.querySelector('#txtSearch') !== null;
-                    return iframe_document.readyState === 'complete' && hasContent;
+                    const iframe = document.querySelector('#frm_main_content');
+                    if (!iframe) return false;
+                    const doc = iframe.contentWindow.document;
+                    return doc && doc.querySelector('#txtSearch') !== null;
                 } catch (e) {
-                    return false;
+                    return true; // Cross-origin — assume ready
                 }
-            }, { timeout: 15000 });
-            
-            console.log('✅ Main iframe ready');
-            await new Promise(resolve => setTimeout(resolve, 1500));
+            }, { timeout: 10000 });
+        } catch (e) {
+            this.log('⚠️ #txtSearch not found — continuing anyway');
+        }
 
-            console.log('Step 3: Verifying iframe accessibility...');
-            const iframeAccessible = await this.isIframeAccessible('#frm_main_content');
-            
-            if (!iframeAccessible) {
-                throw new Error('Page not ready. Please try again.');
-            }
-            console.log('✅ Iframe verified accessible');
+        console.log('✅ Main iframe ready');
+        await new Promise(resolve => setTimeout(resolve, 1500));
 
-            console.log('Step 4: Clicking Add Account button...');
-            await this.page.evaluate(() => {
-                const iframe = document.querySelector('#frm_main_content');
+        console.log('Step 3: Verifying iframe accessibility...');
+        const iframeAccessible = await this.isIframeAccessible('#frm_main_content');
+        
+        if (!iframeAccessible) {
+            throw new Error('Page not ready. Please try again.');
+        }
+        console.log('✅ Iframe verified accessible');
+
+        console.log('Step 4: Clicking Add Account button...');
+        await this.page.evaluate(() => {
+            const iframe = document.querySelector('#frm_main_content');
+            const iframe_document = iframe.contentWindow.document;
+            const buttons = iframe_document.querySelectorAll('#content a');
+            console.log('Found buttons:', buttons.length);
+            console.log('Clicking button index 1 (Add Account)');
+            buttons[1].click();
+        });
+        console.log('✅ Add Account button clicked');
+
+        console.log('Step 5: Waiting for account creation dialog...');
+        await this.page.waitForSelector('#DialogBySHF iframe', { timeout: 15000 });
+        console.log('✅ Dialog selector found');
+        
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        console.log('Step 6: Verifying dialog iframe accessibility...');
+        await this.page.waitForFunction(() => {
+            const iframe = document.querySelector('#DialogBySHF iframe');
+            if (!iframe) return false;
+            
+            try {
                 const iframe_document = iframe.contentWindow.document;
-                const buttons = iframe_document.querySelectorAll('#content a');
-                buttons[1].click();
-            });
-            console.log('✅ Add Account button clicked');
+                if (!iframe_document) return false;
+                
+                const accountInput = iframe_document.querySelector('#txtAccount');
+                const nickNameInput = iframe_document.querySelector('#txtNickName');
+                const passInput = iframe_document.querySelector('#txtLogonPass');
+                const pass2Input = iframe_document.querySelector('#txtLogonPass2');
+                const button = iframe_document.querySelector('a');
+                
+                return accountInput && nickNameInput && passInput && pass2Input && button;
+            } catch (e) {
+                return false;
+            }
+        }, { timeout: 10000 });
+        
+        console.log('✅ Dialog iframe verified and form elements ready');
+        await new Promise(resolve => setTimeout(resolve, 500));
 
-            console.log('Step 5: Waiting for account creation dialog...');
-            await this.page.waitForSelector('#DialogBySHF iframe', { timeout: 15000 });
-            console.log('✅ Dialog selector found');
-            
-            await new Promise(resolve => setTimeout(resolve, 2000));
-
-            console.log('Step 6: Verifying dialog iframe accessibility...');
-            await this.page.waitForFunction(() => {
+        console.log('Step 7: Filling account creation form...');
+        const formFilled = await this.page.evaluate(({ login, password }) => {
+            try {
                 const iframe = document.querySelector('#DialogBySHF iframe');
                 if (!iframe) return false;
                 
-                try {
-                    const iframe_document = iframe.contentWindow.document;
-                    if (!iframe_document) return false;
-                    
-                    const accountInput = iframe_document.querySelector('#txtAccount');
-                    const nickNameInput = iframe_document.querySelector('#txtNickName');
-                    const passInput = iframe_document.querySelector('#txtLogonPass');
-                    const pass2Input = iframe_document.querySelector('#txtLogonPass2');
-                    const button = iframe_document.querySelector('a');
-                    
-                    return accountInput && nickNameInput && passInput && pass2Input && button;
-                } catch (e) {
+                const iframe_document = iframe.contentWindow.document;
+                
+                const accountInput = iframe_document.querySelector('#txtAccount');
+                const nickNameInput = iframe_document.querySelector('#txtNickName');
+                const passInput = iframe_document.querySelector('#txtLogonPass');
+                const pass2Input = iframe_document.querySelector('#txtLogonPass2');
+                const button = iframe_document.querySelector('a');
+                
+                if (!accountInput || !nickNameInput || !passInput || !pass2Input || !button) {
                     return false;
                 }
-            }, { timeout: 10000 });
-            
-            console.log('✅ Dialog iframe verified and form elements ready');
-            await new Promise(resolve => setTimeout(resolve, 500));
-
-            console.log('Step 7: Filling account creation form...');
-            const formFilled = await this.page.evaluate(({ login, password }) => {
-                try {
-                    const iframe = document.querySelector('#DialogBySHF iframe');
-                    if (!iframe) return false;
-                    
-                    const iframe_document = iframe.contentWindow.document;
-                    
-                    const accountInput = iframe_document.querySelector('#txtAccount');
-                    const nickNameInput = iframe_document.querySelector('#txtNickName');
-                    const passInput = iframe_document.querySelector('#txtLogonPass');
-                    const pass2Input = iframe_document.querySelector('#txtLogonPass2');
-                    const button = iframe_document.querySelector('a');
-                    
-                    if (!accountInput || !nickNameInput || !passInput || !pass2Input || !button) {
-                        return false;
-                    }
-                    
-                    accountInput.value = login;
-                    nickNameInput.value = login;
-                    passInput.value = password;
-                    pass2Input.value = password;
-                    
-                    button.click();
-                    
-                    return true;
-                } catch (e) {
-                    return false;
-                }
-            }, { login, password });
-
-            if (!formFilled) {
-                throw new Error('Failed to fill account creation form');
-            }
-            console.log('✅ Form filled and submitted');
-
-            console.log('Step 8: Waiting for result message...');
-            await this.page.waitForSelector('#mb_con p', { timeout: 30000 });
-            
-            const message = await this.page.evaluate(() => {
-                const msgEl = document.querySelector('#mb_con p');
-                return msgEl ? msgEl.innerText : 'No message found';
-            });
-            
-            console.log('Result message:', message);
-
-            console.log('Step 9: Closing dialogs...');
-            await this.page.click("#mb_btn_ok");
-            await new Promise(resolve => setTimeout(resolve, 500));
-            
-            try {
-                const closeButton = await this.page.$('#Close');
-                if (closeButton) {
-                    await this.page.click('#Close');
-                    console.log('✅ Dialog closed');
-                }
+                
+                accountInput.value = login;
+                nickNameInput.value = login;
+                passInput.value = password;
+                pass2Input.value = password;
+                
+                button.click();
+                
+                return true;
             } catch (e) {
-                console.log('No close button found or already closed');
+                return false;
             }
-            
-            await new Promise(resolve => setTimeout(resolve, 500));
+        }, { login, password });
 
-            console.log('Step 10: Processing result...');
-            const successMessages = [
-                "Added successfully",
-                "Users added successfully, but failed to obtain the game ID number, the system will assign you later!"
-            ];
+        if (!formFilled) {
+            throw new Error('Failed to fill account creation form');
+        }
+        console.log('✅ Form filled and submitted');
 
-            if (successMessages.includes(message)) {
-                console.log('✅ SUCCESS! Account created');
-                this.log(`New account created ${login}:${password}`);
+        console.log('Step 8: Waiting for result message...');
+        await this.page.waitForSelector('#mb_con p', { timeout: 30000 });
+        
+        const message = await this.page.evaluate(() => {
+            const msgEl = document.querySelector('#mb_con p');
+            return msgEl ? msgEl.innerText : 'No message found';
+        });
+        
+        console.log('Result message:', message);
 
-                try {
-                    const gameAccount = await GameAccount.findById(id);
-                    if (gameAccount) {
-                        gameAccount.status = 'active';
-                        gameAccount.gameLogin = login;
-                        gameAccount.gamePassword = password;
-                        
-                        if (!gameAccount.metadata) {
-                            gameAccount.metadata = {};
-                        }
-                        gameAccount.metadata.login = login;
-                        gameAccount.metadata.password = password;
-                        await gameAccount.save();
-                        console.log('✅ Database updated');
-                    }
-                } catch (error) {
-                    console.log('DB update error:', error.message);
-                }
-
-                await Tasks.approve(id);
-                
-                console.log('✅ CREATE ACCOUNT COMPLETE');
-                return {
-                    success: true,
-                    login: login,
-                    password: password
-                };
-                
-            } else {
-                console.log('❌ Account creation failed:', message);
-                this.error(`Error while creating account: ${message}`);
-
-                try {
-                    const gameAccount = await GameAccount.findById(id);
-                    if (gameAccount) {
-                        gameAccount.status = 'failed';
-                        if (!gameAccount.metadata) {
-                            gameAccount.metadata = {};
-                        }
-                        gameAccount.metadata.notes = message;
-                        await gameAccount.save();
-                    }
-                } catch (error) {
-                    console.log('DB update error:', error.message);
-                }
-
-                await Tasks.error(id, message);
-                throw new Error(message);
+        console.log('Step 9: Closing dialogs...');
+        await this.page.click("#mb_btn_ok");
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        try {
+            const closeButton = await this.page.$('#Close');
+            if (closeButton) {
+                await this.page.click('#Close');
+                console.log('✅ Dialog closed');
             }
+        } catch (e) {
+            console.log('No close button found or already closed');
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        console.log('Step 10: Processing result...');
+        const successMessages = [
+            "Added successfully",
+            "Users added successfully, but failed to obtain the game ID number, the system will assign you later!"
+        ];
+
+        if (successMessages.includes(message)) {
+            console.log('✅ SUCCESS! Account created');
+            this.log(`New account created ${login}:${password}`);
+
+            try {
+                const gameAccount = await GameAccount.findById(id);
+                if (gameAccount) {
+                    gameAccount.status = 'active';
+                    gameAccount.gameLogin = login;
+                    gameAccount.gamePassword = password;
+                    
+                    if (!gameAccount.metadata) {
+                        gameAccount.metadata = {};
+                    }
+                    gameAccount.metadata.login = login;
+                    gameAccount.metadata.password = password;
+                    await gameAccount.save();
+                    console.log('✅ Database updated');
+                }
+            } catch (error) {
+                console.log('DB update error:', error.message);
+                this.error(`Error updating account status in DB: ${error.message}`);
+            }
+
+            await Tasks.approve(id);
             
-        } catch (error) {
-            console.log('❌ CREATE ACCOUNT ERROR:', error.message);
-            this.error(`Error creating account: ${error.message}`);
+            console.log('✅ CREATE ACCOUNT COMPLETE');
+            return {
+                success: true,
+                login: login,
+                password: password
+            };
             
+        } else {
+            console.log('❌ Account creation failed:', message);
+            this.error(`Error while creating account: ${message}`);
+
             try {
                 const gameAccount = await GameAccount.findById(id);
                 if (gameAccount) {
@@ -1593,17 +1592,39 @@ class MilkyWaysController {
                     if (!gameAccount.metadata) {
                         gameAccount.metadata = {};
                     }
-                    gameAccount.metadata.notes = error.message;
+                    gameAccount.metadata.notes = message;
                     await gameAccount.save();
+                    console.log('Database updated with failure status');
                 }
-            } catch (dbError) {
-                console.log('Failed to update DB with error:', dbError.message);
+            } catch (error) {
+                console.log('DB update error:', error.message);
             }
-            
-            throw error;
+
+            await Tasks.error(id, message);
+            throw new Error(message);
         }
-    }// PART 3 OF 3 - Lines 1301-End (FINAL)
-// Paste this AFTER Part 2
+        
+    } catch (error) {
+        console.log('❌ CREATE ACCOUNT ERROR:', error.message);
+        this.error(`Error creating account: ${error.message}`);
+        
+        try {
+            const gameAccount = await GameAccount.findById(id);
+            if (gameAccount) {
+                gameAccount.status = 'failed';
+                if (!gameAccount.metadata) {
+                    gameAccount.metadata = {};
+                }
+                gameAccount.metadata.notes = error.message;
+                await gameAccount.save();
+            }
+        } catch (dbError) {
+            console.log('Failed to update DB with error:', dbError.message);
+        }
+        
+        throw error;
+    }
+}
 
     async recharge({ id, login, amount, remark, is_manual }) {
         console.log('🔴 RECHARGE START:', { id, login, amount, remark, is_manual });
