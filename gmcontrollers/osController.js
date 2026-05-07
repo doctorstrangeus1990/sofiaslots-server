@@ -1488,11 +1488,11 @@ class OrionStarsController {
         }
         console.log('✅ On correct page');
 
-        // ⭐ STEP 2: FIXED — cross-origin safe iframe check
+        // ⭐ STEP 2: cross-origin safe iframe check
         console.log('Step 2: Waiting for main iframe to be ready...');
         await this.page.waitForSelector('#frm_main_content', { timeout: 10000 });
 
-        await new Promise(resolve => setTimeout(resolve, 2000)); // buffer for proxy
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
         await this.page.waitForFunction(() => {
             const iframe = document.querySelector('#frm_main_content');
@@ -1518,23 +1518,37 @@ class OrionStarsController {
         console.log('✅ Main iframe ready');
         await new Promise(resolve => setTimeout(resolve, 1500));
 
+        // ⭐ STEP 3: wait until #content buttons actually exist
         console.log('Step 3: Verifying iframe accessibility...');
-        const iframeAccessible = await this.isIframeAccessible('#frm_main_content');
-        
-        if (!iframeAccessible) {
-            throw new Error('Page not ready. Please try again.');
-        }
+        await this.page.waitForFunction(() => {
+            try {
+                const iframe = document.querySelector('#frm_main_content');
+                if (!iframe) return false;
+                const doc = iframe.contentWindow.document;
+                if (!doc) return false;
+                const buttons = doc.querySelectorAll('#content a');
+                return buttons && buttons.length >= 2;
+            } catch (e) {
+                return false;
+            }
+        }, { timeout: 15000 });
         console.log('✅ Iframe verified accessible');
 
+        // ⭐ STEP 4: safe click with check
         console.log('Step 4: Clicking Add Account button...');
-        await this.page.evaluate(() => {
+        const buttonClicked = await this.page.evaluate(() => {
             const iframe = document.querySelector('#frm_main_content');
             const iframe_document = iframe.contentWindow.document;
             const buttons = iframe_document.querySelectorAll('#content a');
             console.log('Found buttons:', buttons.length);
-            console.log('Clicking button index 1 (Add Account)');
+            if (!buttons || buttons.length < 2) return false;
             buttons[1].click();
+            return true;
         });
+
+        if (!buttonClicked) {
+            throw new Error('Add Account button not found — page not fully loaded');
+        }
         console.log('✅ Add Account button clicked');
 
         console.log('Step 5: Waiting for account creation dialog...');
