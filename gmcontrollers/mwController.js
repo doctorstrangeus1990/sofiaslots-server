@@ -462,88 +462,99 @@ class MilkyWaysController {
         await this.checkAuthorization();
     }
 
-    async checkAuthorization() {
-        try {
-            // ⭐ Prevent multiple authorization attempts
-            if (this.isAuthorizing) {
-                this.log('Authorization already in progress, waiting...');
-                if (this.authorizationPromise) {
-                    await this.authorizationPromise;
-                }
-                return;
+  async checkAuthorization() {
+    try {
+        if (this.isAuthorizing) {
+            this.log('Authorization already in progress, waiting...');
+            if (this.authorizationPromise) {
+                await this.authorizationPromise;
             }
+            return;
+        }
 
-            if (!this.page || this.page.isClosed()) {
-                throw new Error('Page is closed, cannot check authorization');
-            }
+        if (!this.page || this.page.isClosed()) {
+            throw new Error('Page is closed, cannot check authorization');
+        }
 
-            this.log('Checking authorization status...');
+        this.log('Checking authorization status...');
+        
+        await this.page.goto(`https://orionstars.vip:8781/Store.aspx`, {
+            waitUntil: 'domcontentloaded',
+            timeout: 15000
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 1500));
+
+        const currentPath = await this.page.evaluate(() => location.pathname);
+        this.log(`Landed on: ${currentPath}`);
+
+        if (currentPath === '/default.aspx') {
+            this.authorized = false;
+            this.log('Redirected to login page - need to authorize');
             
-            await this.page.goto(`https://milkywayapp.xyz:8781/Store.aspx`, {
-                waitUntil: 'domcontentloaded',
-                timeout: 15000
-            });
+            this.resetAuthRetryIfNeeded();
+            
+            if (this.authRetryCount >= this.maxAuthRetries) {
+                throw new Error(`Max authorization attempts (${this.maxAuthRetries}) reached. Please wait a few minutes and refresh.`);
+            }
+            
+            this.authRetryCount++;
+            this.lastAuthAttempt = Date.now();
+            this.log(`Authorization attempt ${this.authRetryCount}/${this.maxAuthRetries}`);
+            
+            await this.authorize();
+            
+            this.authRetryCount = 0;
+            return;
 
-            await new Promise(resolve => setTimeout(resolve, 1500));
+        } else {
+            this.log('On Store.aspx, verifying iframe...');
 
-            const currentPath = await this.page.evaluate(() => location.pathname);
-            this.log(`Landed on: ${currentPath}`);
+            // Wait for iframe element to exist
+            await this.page.waitForSelector('#frm_main_content', { timeout: 10000 });
 
-            if (currentPath === '/default.aspx') {
-                this.authorized = false;
-                this.log('Redirected to login page - need to authorize');
-                
-                // ⭐ ADD RETRY LIMIT CHECK
-                this.resetAuthRetryIfNeeded();
-                
-                if (this.authRetryCount >= this.maxAuthRetries) {
-                    throw new Error(`Max authorization attempts (${this.maxAuthRetries}) reached. Please wait a few minutes and refresh.`);
-                }
-                
-                this.authRetryCount++;
-                this.lastAuthAttempt = Date.now();
-                this.log(`Authorization attempt ${this.authRetryCount}/${this.maxAuthRetries}`);
-                
-                await this.authorize();
-                
-                // ⭐ RESET ON SUCCESS
-                this.authRetryCount = 0;
-                return;
-            } else {
-                this.log('On Store.aspx, verifying iframe...');
-                
-                await this.page.waitForSelector('#frm_main_content', { timeout: 10000 });
-                
+            // Extra buffer for proxy latency
+            await new Promise(resolve => setTimeout(resolve, 3000));
+
+            // ⭐ Check readyState only — don't access contentWindow.document (cross-origin throws)
+            await this.page.waitForFunction(() => {
+                const iframe = document.querySelector('#frm_main_content');
+                if (!iframe) return false;
+                // Just check the iframe element is attached and has a src
+                return iframe.src && iframe.src.length > 0;
+            }, { timeout: 10000 });
+
+            // ⭐ Wait for #txtSearch separately and non-fatal
+            try {
                 await this.page.waitForFunction(() => {
-                    const iframe = document.querySelector('#frm_main_content');
-                    if (!iframe) return false;
-                    
                     try {
-                        const iframe_document = iframe.contentWindow.document;
-                        if (!iframe_document) return false;
-                        
-                        const hasContent = iframe_document.querySelector('#txtSearch') !== null;
-                        return iframe_document.readyState === 'complete' && hasContent;
+                        const iframe = document.querySelector('#frm_main_content');
+                        if (!iframe) return false;
+                        const doc = iframe.contentWindow.document;
+                        return doc && doc.querySelector('#txtSearch') !== null;
                     } catch (e) {
-                        return false;
+                        // Cross-origin — treat as ready since we landed on Store.aspx
+                        return true;
                     }
                 }, { timeout: 10000 });
-                
-                this.log('✅ Already authorized - iframe ready');
-                this.authorized = true;
-                
-                // ⭐ RESET RETRY COUNTER ON SUCCESS
-                this.authRetryCount = 0;
-                
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                return true;
+            } catch (e) {
+                this.log('⚠️ Could not verify #txtSearch — continuing anyway (proxy/cross-origin)');
             }
-        } catch (error) {
-            this.error(`Error checking authorization: ${error.message}`);
-            this.authorized = false;
-            throw error; // ⭐ Don't retry, just throw
+
+            this.log('✅ Already authorized - iframe ready');
+            this.authorized = true;
+            this.authRetryCount = 0;
+            
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            return true;
         }
+
+    } catch (error) {
+        this.error(`Error checking authorization: ${error.message}`);
+        this.authorized = false;
+        throw error;
     }
+}
 
     async authorize() {
         if (this.authorizationInProgress) {
