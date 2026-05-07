@@ -1,5 +1,5 @@
-// controllers/OrionStarsController.js - RAILWAY FIXED VERSION
-// PART 1 OF 3
+// controllers/OrionStarsController.js - FIXED VERSION (NO INFINITE LOOPS + AUTH RETRY LIMITS)
+// PART 1 OF 3 - Lines 1-650
 const Puppeteer = require('puppeteer');
 const Captcha = require('../lib/captcha.js');
 const { writeFileSync, readFileSync, existsSync } = require('fs');
@@ -19,18 +19,18 @@ class OrionStarsController {
         this.gameType = 'os';
         this.initialized = false;
         this.agentCredentials = null;
-
+        
         this.keepAlive = true;
         this.lastActivity = Date.now();
         this.activityTimeout = 5 * 60 * 1000;
-
+        
         this.cache = {
             adminBalance: null,
             adminBalanceTimestamp: null,
             cacheDuration: 30 * 1000
         };
 
-        // QUEUE SYSTEM
+        // QUEUE SYSTEM (NEEDED - All operations use Puppeteer)
         this.requestQueue = [];
         this.isProcessingQueue = false;
         this.maxConcurrentRequests = 1;
@@ -45,25 +45,25 @@ class OrionStarsController {
         this.authorizationPromise = null;
         this.authorizationInProgress = false;
 
-        // RETRY LIMIT TRACKING
+        // ⭐ RETRY LIMIT TRACKING (PREVENT INFINITE LOOPS)
         this.authRetryCount = 0;
         this.maxAuthRetries = 3;
         this.lastAuthAttempt = null;
-        this.authResetInterval = 5 * 60 * 1000;
+        this.authResetInterval = 5 * 60 * 1000; // Reset counter after 5 minutes
 
         // SESSION MANAGEMENT
         this.sessionTimeout = null;
         this.lastSuccessfulOperation = Date.now();
         this.consecutiveErrors = 0;
         this.maxConsecutiveErrors = 3;
-        this.consecutiveMonitorFailures = 0;
+        this.consecutiveMonitorFailures = 0; // ⭐ PREVENT MONITOR INFINITE LOOPS
         this.maxMonitorFailures = 5;
 
         this.loadAgentCredentials().catch(err => {
             this.error(`Failed to load credentials on startup: ${err.message}`);
         });
 
-        this.startSessionMonitor();
+        this.startSessionMonitor(); // ⭐ ADD SESSION MONITOR
 
         process.on('unhandledRejection', e => {
             this.logger.error(e);
@@ -74,35 +74,38 @@ class OrionStarsController {
         });
     }
 
-    log(log)   { this.logger.log(`${log}`) }
+    log(log) { this.logger.log(`${log}`) }
     error(log) { this.logger.error(`${log}`) }
 
+    // ⭐ RESET AUTH RETRY COUNTER IF ENOUGH TIME HAS PASSED
     resetAuthRetryIfNeeded() {
-        if (this.lastAuthAttempt &&
+        if (this.lastAuthAttempt && 
             Date.now() - this.lastAuthAttempt > this.authResetInterval) {
             this.log('Resetting auth retry counter after timeout');
             this.authRetryCount = 0;
         }
     }
 
+    // ⭐ SESSION MONITORING (WITH FAILURE LIMIT)
     startSessionMonitor() {
         setInterval(async () => {
             if (!this.initialized || !this.page || !this.browser) return;
 
             const timeSinceLastActivity = Date.now() - this.lastSuccessfulOperation;
-
+            
             if (timeSinceLastActivity > this.activityTimeout) {
+                // ⭐ Check if too many consecutive failures
                 if (this.consecutiveMonitorFailures >= this.maxMonitorFailures) {
                     this.error(`Session monitor disabled after ${this.maxMonitorFailures} consecutive failures. Manual restart required.`);
-                    return;
+                    return; // ⭐ STOP TRYING - NO INFINITE LOOP
                 }
-
+                
                 this.log('Session timeout detected, reinitializing...');
                 try {
                     await this.reinitialize();
-                    this.consecutiveMonitorFailures = 0;
+                    this.consecutiveMonitorFailures = 0; // ⭐ Reset on success
                 } catch (error) {
-                    this.consecutiveMonitorFailures++;
+                    this.consecutiveMonitorFailures++; // ⭐ Increment on failure
                     this.error(`Reinitialize failed (${this.consecutiveMonitorFailures}/${this.maxMonitorFailures}): ${error.message}`);
                 }
             }
@@ -114,21 +117,23 @@ class OrionStarsController {
         this.initialized = false;
         this.browserReady = false;
         this.authorized = false;
+        
         this.cache.adminBalance = null;
         this.cache.adminBalanceTimestamp = null;
-        this.authRetryCount = 0;
-
+        
+        this.authRetryCount = 0; // ⭐ Reset retry counter
+        
         try {
             await this.initialize();
-            this.consecutiveMonitorFailures = 0;
+            this.consecutiveMonitorFailures = 0; // ⭐ Reset on successful reinit
         } catch (error) {
             this.error(`Reinitialization failed: ${error.message}`);
-            throw error;
+            throw error; // ⭐ Throw so monitor can catch it
         }
     }
 
     // ========================================
-    // QUEUE SYSTEM
+    // QUEUE SYSTEM - FAST FAIL
     // ========================================
 
     async queueOperation(operationName, operationFunction) {
@@ -140,9 +145,10 @@ class OrionStarsController {
                 reject,
                 timestamp: Date.now()
             });
-
+            
             this.log(`📥 Queued: "${operationName}" | Queue length: ${this.requestQueue.length}`);
-
+            
+            // ✅ Auto-initialize if not ready
             if (!this.isProcessingQueue && this.initialized && this.browserReady) {
                 this.processQueue();
             } else if (!this.initialized || !this.browserReady) {
@@ -153,6 +159,7 @@ class OrionStarsController {
                     }
                 }).catch(err => {
                     this.error(`Failed to initialize for queued operation: ${err.message}`);
+                    // ✅ FIX: Reject ALL queued tasks
                     while (this.requestQueue.length > 0) {
                         const task = this.requestQueue.shift();
                         task.reject(new Error('Browser initialization failed'));
@@ -167,38 +174,42 @@ class OrionStarsController {
             this.log('Queue processor already running');
             return;
         }
-
+        
         this.isProcessingQueue = true;
         this.log('🚀 Queue processor started');
-
+        
         while (this.requestQueue.length > 0) {
             const task = this.requestQueue.shift();
             const queueWaitTime = Date.now() - task.timestamp;
             this.log(`▶️  Processing: "${task.name}" (waited ${queueWaitTime}ms) | Remaining: ${this.requestQueue.length}`);
-
+            
             try {
+                // Check browser is ready ONCE - if not, fail immediately
                 if (!this.initialized || !this.browserReady || !await this.isBrowserValid()) {
                     throw new Error('Browser not ready. Please try again.');
                 }
-
+                
                 const startTime = Date.now();
                 const result = await task.function();
                 const executionTime = Date.now() - startTime;
-
+                
                 this.log(`✅ Completed: "${task.name}" in ${executionTime}ms`);
-                this.lastSuccessfulOperation = Date.now();
+                this.lastSuccessfulOperation = Date.now(); // ⭐ UPDATE LAST ACTIVITY
                 this.consecutiveErrors = 0;
                 task.resolve(result);
-
+                
+                // Small delay between operations for stability
                 await new Promise(resolve => setTimeout(resolve, 500));
-
+                
             } catch (error) {
                 this.error(`❌ Failed: "${task.name}" - ${error.message}`);
                 this.consecutiveErrors++;
+                
+                // Remove from queue and reject immediately - no retries
                 task.reject(error);
             }
         }
-
+        
         this.isProcessingQueue = false;
         this.log('🏁 Queue processor stopped');
     }
@@ -208,6 +219,7 @@ class OrionStarsController {
     // ========================================
 
     async ensureBrowserReady() {
+        // Simple check - no retries, just throw error if not ready
         if (!this.browser || !this.page) {
             throw new Error('Browser not initialized. Please refresh and try again.');
         }
@@ -229,6 +241,7 @@ class OrionStarsController {
             throw new Error('Browser disconnected. Please refresh and try again.');
         }
 
+        // Check authorization once - no retries
         if (!this.authorized) {
             throw new Error('Not authorized. Please login again.');
         }
@@ -236,6 +249,7 @@ class OrionStarsController {
 
     async isBrowserValid() {
         if (!this.browser || !this.page) return false;
+        
         try {
             if (this.page.isClosed()) return false;
             await this.browser.version();
@@ -268,9 +282,9 @@ class OrionStarsController {
 
     async loadAgentCredentials() {
         try {
-            const game = await Game.findOne({
-                shortcode: 'OS',
-                status: { $in: ['active', 'maintenance'] }
+            const game = await Game.findOne({ 
+                shortcode: 'OS', 
+                status: { $in: ['active', 'maintenance'] } 
             });
 
             if (!game) {
@@ -295,17 +309,20 @@ class OrionStarsController {
     }
 
     async initialize() {
+        // If already initialized and browser is valid, just return
         if (this.initialized && this.browserReady && await this.isBrowserValid()) {
             this.lastActivity = Date.now();
             return;
         }
 
+        // If initialization is in progress, wait for it
         if (this.isInitializing) {
             this.log('Initialization already in progress, waiting...');
             if (this.initializationPromise) {
                 await this.initializationPromise;
                 return;
             }
+            // Fallback: wait and check again
             await new Promise(resolve => setTimeout(resolve, 2000));
             if (this.initialized && this.browserReady) {
                 return;
@@ -313,55 +330,39 @@ class OrionStarsController {
             throw new Error('Initialization timeout. Please try again.');
         }
 
-        // ⭐ Wait for Railway container to be fully ready on cold start
-        const uptime = process.uptime();
-        if (uptime < 8) {
-            this.log(`Cold start detected (uptime: ${uptime.toFixed(1)}s), waiting...`);
-            await new Promise(resolve => setTimeout(resolve, (8 - uptime) * 1000));
-        }
-
         this.isInitializing = true;
         this.browserReady = false;
 
-        let lastError;
-        for (let attempt = 1; attempt <= 3; attempt++) {
-            try {
-                this.log(`Browser init attempt ${attempt}/3...`);
-
-                if (!this.agentCredentials) {
-                    const loaded = await this.loadAgentCredentials();
-                    if (!loaded) throw new Error('Cannot initialize without agent credentials');
-                }
-
-                this.initializationPromise = this.createBrowser();
-                await this.initializationPromise;
-                this.initialized = true;
-                this.browserReady = true;
-                this.lastSuccessfulOperation = Date.now();
-                this.log(`✅ Browser ready on attempt ${attempt}`);
-                this.isInitializing = false;
-                this.initializationPromise = null;
-                return;
-
-            } catch (error) {
-                lastError = error;
-                this.error(`Attempt ${attempt} failed: ${error.message}`);
-                this.initialized = false;
-                this.browserReady = false;
-                if (attempt < 3) {
-                    await new Promise(resolve => setTimeout(resolve, 3000 * attempt));
+        try {
+            // Load credentials if not loaded
+            if (!this.agentCredentials) {
+                const credentialsLoaded = await this.loadAgentCredentials();
+                if (!credentialsLoaded) {
+                    throw new Error('Cannot initialize without agent credentials');
                 }
             }
-        }
 
-        this.isInitializing = false;
-        this.initializationPromise = null;
-        throw lastError;
+            this.initializationPromise = this.createBrowser();
+            await this.initializationPromise;
+            this.initialized = true;
+            this.browserReady = true;
+            this.lastSuccessfulOperation = Date.now();
+            
+        } catch (error) {
+            this.error(`Initialization failed: ${error.message}`);
+            this.initialized = false;
+            this.browserReady = false;
+            throw error;
+        } finally {
+            this.isInitializing = false;
+            this.initializationPromise = null;
+        }
     }
 
     async createBrowser() {
         this.log('Initializing browser for OrionStars...');
-
+        
+        // Clean up existing browser
         if (this.browser) {
             try {
                 this.browser.removeAllListeners('disconnected');
@@ -410,7 +411,7 @@ class OrionStarsController {
                 "--enable-features=NetworkService,NetworkServiceInProcess",
                 "--force-webrtc-ip-handling-policy=default_public_interface_only"
             ],
-            // pipe: true  ← REMOVED for Railway multi-browser support
+            pipe: true,
             ignoreHTTPSErrors: true,
             defaultViewport: {
                 width: 1312,
@@ -420,9 +421,9 @@ class OrionStarsController {
 
         const pages = await this.browser.pages();
         this.page = pages[0] || await this.browser.newPage();
-
+        
         await this.page.setRequestInterception(true);
-
+        
         this.page.on('request', (req) => {
             if (req.isInterceptResolutionHandled()) {
                 return;
@@ -430,16 +431,16 @@ class OrionStarsController {
 
             const resourceType = req.resourceType();
             const url = req.url();
-
-            if (url.includes('/default.aspx') ||
-                url.includes('ImageCheck') ||
-                url.includes('VerifyCode') ||
+            
+            if (url.includes('/default.aspx') || 
+                url.includes('ImageCheck') || 
+                url.includes('VerifyCode') || 
                 url.includes('captcha') ||
                 url.includes('.aspx')) {
                 req.continue().catch(() => {});
                 return;
             }
-
+            
             if (['stylesheet', 'font', 'media'].includes(resourceType)) {
                 req.abort().catch(() => {});
             } else {
@@ -447,12 +448,14 @@ class OrionStarsController {
             }
         });
 
+        // Handle page errors
         this.page.on('error', (error) => {
             this.error(`Page crashed: ${error.message}`);
             this.browserReady = false;
             this.initialized = false;
         });
 
+        // Handle page close
         this.page.on('close', () => {
             this.log('Page closed unexpectedly');
             this.browserReady = false;
@@ -461,6 +464,7 @@ class OrionStarsController {
 
         await this.page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
 
+        // Load cookies
         const cookiesPath = path.join(__dirname, 'cookiesos.json');
         if (existsSync(cookiesPath)) {
             try {
@@ -473,6 +477,7 @@ class OrionStarsController {
             }
         }
 
+        // Handle browser disconnect
         this.browser.once('disconnected', () => {
             this.log('Browser disconnected');
             this.browser = null;
@@ -487,6 +492,7 @@ class OrionStarsController {
 
     async checkAuthorization() {
         try {
+            // ⭐ Prevent multiple authorization attempts
             if (this.isAuthorizing) {
                 this.log('Authorization already in progress, waiting...');
                 if (this.authorizationPromise) {
@@ -500,13 +506,14 @@ class OrionStarsController {
             }
 
             this.log('Checking authorization status...');
-
+            
             await this.page.goto(`https://orionstars.vip:8781/Store.aspx`, {
                 waitUntil: 'domcontentloaded',
-                timeout: 30000  // ⭐ was 15000
+                timeout: 15000
             });
 
-            await new Promise(resolve => setTimeout(resolve, 3000)); // ⭐ was 1500
+            // Wait a moment for any redirect
+            await new Promise(resolve => setTimeout(resolve, 1500));
 
             const currentPath = await this.page.evaluate(() => location.pathname);
             this.log(`Landed on: ${currentPath}`);
@@ -514,69 +521,59 @@ class OrionStarsController {
             if (currentPath === '/default.aspx') {
                 this.authorized = false;
                 this.log('Redirected to login page - need to authorize');
-
+                
+                // ⭐ ADD RETRY LIMIT CHECK
                 this.resetAuthRetryIfNeeded();
-
+                
                 if (this.authRetryCount >= this.maxAuthRetries) {
                     throw new Error(`Max authorization attempts (${this.maxAuthRetries}) reached. Please wait a few minutes and refresh.`);
                 }
-
+                
                 this.authRetryCount++;
                 this.lastAuthAttempt = Date.now();
                 this.log(`Authorization attempt ${this.authRetryCount}/${this.maxAuthRetries}`);
-
+                
+                // Call authorize and wait for it to complete
                 await this.authorize();
-
+                
+                // ⭐ RESET ON SUCCESS
                 this.authRetryCount = 0;
                 return;
-
             } else {
                 this.log('On Store.aspx, verifying iframe...');
-
-                // ⭐ Step 1 — wait for iframe element
-                await this.page.waitForSelector('#frm_main_content', { timeout: 20000 });
-
-                // ⭐ Step 2 — buffer for Railway's slower network
-                await new Promise(resolve => setTimeout(resolve, 3000));
-
-                // ⭐ Step 3 — just check readyState, don't require #txtSearch
+                
+                // Wait for iframe to be ready
+                await this.page.waitForSelector('#frm_main_content', { timeout: 10000 });
+                
+                // Wait for iframe content to be accessible
                 await this.page.waitForFunction(() => {
                     const iframe = document.querySelector('#frm_main_content');
                     if (!iframe) return false;
+                    
                     try {
-                        const doc = iframe.contentWindow.document;
-                        return doc && doc.readyState === 'complete';
+                        const iframe_document = iframe.contentWindow.document;
+                        if (!iframe_document) return false;
+                        
+                        const hasContent = iframe_document.querySelector('#txtSearch') !== null;
+                        return iframe_document.readyState === 'complete' && hasContent;
                     } catch (e) {
                         return false;
                     }
-                }, { timeout: 30000 }); // ⭐ was 10000
-
-                // ⭐ Step 4 — #txtSearch separately, non-fatal
-                try {
-                    await this.page.waitForFunction(() => {
-                        const iframe = document.querySelector('#frm_main_content');
-                        if (!iframe) return false;
-                        try {
-                            return iframe.contentWindow.document.querySelector('#txtSearch') !== null;
-                        } catch (e) {
-                            return false;
-                        }
-                    }, { timeout: 15000 });
-                } catch (e) {
-                    this.log('⚠️ #txtSearch not found in iframe but continuing (Railway slowness)');
-                }
-
+                }, { timeout: 10000 });
+                
                 this.log('✅ Already authorized - iframe ready');
                 this.authorized = true;
+                
+                // ⭐ RESET RETRY COUNTER ON SUCCESS
                 this.authRetryCount = 0;
-
+                
                 await new Promise(resolve => setTimeout(resolve, 1000));
                 return true;
             }
         } catch (error) {
             this.error(`Error checking authorization: ${error.message}`);
             this.authorized = false;
-            throw error;
+            throw error; // ⭐ Don't retry, just throw
         }
     }
 
@@ -585,32 +582,33 @@ class OrionStarsController {
             throw new Error('Authorization already in progress');
         }
 
+        // ⭐ CHECK RETRY LIMIT AT START
         this.resetAuthRetryIfNeeded();
-
+        
         if (this.authRetryCount >= this.maxAuthRetries) {
             throw new Error(`Max authorization attempts (${this.maxAuthRetries}) reached. Please wait ${Math.ceil(this.authResetInterval / 60000)} minutes.`);
         }
 
         this.authorizationInProgress = true;
         this.isAuthorizing = true;
-
+        
         try {
             this.log('Starting authorization...');
-
+            
             if (!this.page || this.page.isClosed()) {
                 throw new Error('Page is invalid, cannot authorize');
             }
 
             await this.page.goto(`https://orionstars.vip:8781/default.aspx`, {
                 waitUntil: 'domcontentloaded',
-                timeout: 30000  // ⭐ was 15000
+                timeout: 15000
             });
 
             await Promise.all([
-                this.page.waitForSelector('#txtLoginName',  { timeout: 15000 }),
-                this.page.waitForSelector('#txtLoginPass',  { timeout: 15000 }),
-                this.page.waitForSelector('#txtVerifyCode', { timeout: 15000 }),
-                this.page.waitForSelector('#ImageCheck',    { timeout: 15000 })
+                this.page.waitForSelector('#txtLoginName', { timeout: 10000 }),
+                this.page.waitForSelector('#txtLoginPass', { timeout: 10000 }),
+                this.page.waitForSelector('#txtVerifyCode', { timeout: 10000 }),
+                this.page.waitForSelector('#ImageCheck', { timeout: 10000 })
             ]);
 
             if (!this.agentCredentials) {
@@ -621,21 +619,23 @@ class OrionStarsController {
             }
 
             this.log(`Using agent credentials: ${this.agentCredentials.username}`);
-
+            
+            // Clear and type credentials
             await this.page.evaluate(() => {
                 document.querySelector('#txtLoginName').value = '';
                 document.querySelector('#txtLoginPass').value = '';
             });
-
+            
             await this.page.type('#txtLoginName', this.agentCredentials.username);
             await this.page.type('#txtLoginPass', this.agentCredentials.password);
 
-            await this.page.waitForSelector('#ImageCheck', { timeout: 15000 });
-
+            await this.page.waitForSelector('#ImageCheck', { timeout: 10000 });
+            
+            // Wait for captcha image to fully load
             await this.page.waitForFunction(() => {
                 const img = document.querySelector('#ImageCheck');
                 return img && img.complete && img.naturalHeight !== 0;
-            }, { timeout: 15000 });
+            }, { timeout: 10000 });
 
             await new Promise(resolve => setTimeout(resolve, 500));
 
@@ -644,8 +644,9 @@ class OrionStarsController {
                 if (!img || !img.complete || img.naturalHeight === 0) {
                     throw new Error('Captcha image not loaded');
                 }
+                
                 const canvas = document.createElement('canvas');
-                canvas.width  = img.naturalWidth  || 132;
+                canvas.width = img.naturalWidth || 132;
                 canvas.height = img.naturalHeight || 40;
                 const context = canvas.getContext('2d');
                 context.drawImage(img, 0, 0);
@@ -657,17 +658,17 @@ class OrionStarsController {
             }
 
             const captchaValue = await Captcha(base64Captcha, 5);
-
+            
             if (!captchaValue) {
                 throw new Error('Failed to solve captcha');
             }
-
+            
             this.log(`Captcha solved: ${captchaValue}`);
-
+            
             await this.page.type('#txtVerifyCode', captchaValue);
             await this.page.click('#btnLogin');
 
-            await new Promise(resolve => setTimeout(resolve, 3000)); // ⭐ was 2000
+            await new Promise(resolve => setTimeout(resolve, 2000));
 
             const error_message = await this.page.evaluate(() => {
                 const element = document.querySelector('#mb_con p');
@@ -687,57 +688,43 @@ class OrionStarsController {
             if (is_authorized) {
                 this.authorized = true;
                 this.log('✅ Successfully authorized');
+                
+                // ⭐ RESET RETRY COUNTER ON SUCCESS
                 this.authRetryCount = 0;
-
+                
                 await this.saveCookies();
-
+                
+                // Wait for iframe before continuing
                 this.log('Waiting for Store.aspx iframe to be ready...');
-
-                // ⭐ Step 1
-                await this.page.waitForSelector('#frm_main_content', { timeout: 20000 });
-
-                // ⭐ Step 2 — buffer
-                await new Promise(resolve => setTimeout(resolve, 3000));
-
-                // ⭐ Step 3 — readyState only
+                await this.page.waitForSelector('#frm_main_content', { timeout: 10000 });
+                
+                // Wait for iframe content to be accessible
                 await this.page.waitForFunction(() => {
                     const iframe = document.querySelector('#frm_main_content');
                     if (!iframe) return false;
+                    
                     try {
-                        const doc = iframe.contentWindow.document;
-                        return doc && doc.readyState === 'complete';
+                        const iframe_document = iframe.contentWindow.document;
+                        if (!iframe_document) return false;
+                        
+                        const hasContent = iframe_document.querySelector('#txtSearch') !== null;
+                        return iframe_document.readyState === 'complete' && hasContent;
                     } catch (e) {
                         return false;
                     }
-                }, { timeout: 30000 }); // ⭐ was 10000
-
-                // ⭐ Step 4 — #txtSearch non-fatal
-                try {
-                    await this.page.waitForFunction(() => {
-                        const iframe = document.querySelector('#frm_main_content');
-                        if (!iframe) return false;
-                        try {
-                            return iframe.contentWindow.document.querySelector('#txtSearch') !== null;
-                        } catch (e) {
-                            return false;
-                        }
-                    }, { timeout: 15000 });
-                    this.log('Store.aspx iframe is fully loaded and ready');
-                } catch (e) {
-                    this.log('⚠️ #txtSearch not found after login but iframe is complete — continuing');
-                }
-
+                }, { timeout: 10000 });
+                
+                this.log('Store.aspx iframe is fully loaded and ready');
                 await new Promise(resolve => setTimeout(resolve, 2000));
-
             } else {
                 this.log('Failed login - not redirected to Store.aspx');
                 throw new Error('Login failed - no redirect');
             }
-
+            
         } catch (error) {
             this.error(`Error during authorization: ${error.message}`);
             this.authorized = false;
-            throw error;
+            throw error; // ⭐ Don't retry, just throw
         } finally {
             this.authorizationInProgress = false;
             this.isAuthorizing = false;
@@ -756,7 +743,8 @@ class OrionStarsController {
             this.error(`Error saving cookies: ${error.message}`);
             return false;
         }
-    }// PART 2 OF 3 - paste INSIDE the class, after saveCookies()
+    }// PART 2 OF 3 - Lines 651-1300
+// Paste this AFTER Part 1
 
     // ========================================
     // API METHODS WITH QUEUE
@@ -773,8 +761,8 @@ class OrionStarsController {
                     }
                     return result;
                 };
-
-                const login    = `bc${generateRandomString()}_${generateRandomString()}`;
+                
+                const login = `bc${generateRandomString()}_${generateRandomString()}`;
                 const password = `bc${generateRandomString()}_${generateRandomString()}`;
 
                 console.log(`Generated credentials for API - Login: ${login}, Password: ${password}`);
@@ -785,7 +773,9 @@ class OrionStarsController {
                     gameLogin: login,
                     gamePassword: password,
                     status: 'pending',
-                    metadata: { createdVia: 'api' }
+                    metadata: {
+                        createdVia: 'api'
+                    }
                 });
 
                 await gameAccount.save();
@@ -799,16 +789,16 @@ class OrionStarsController {
                 const result = await this.createAccount(task);
 
                 if (result && result.success) {
-                    gameAccount.status       = 'active';
-                    gameAccount.gameLogin    = result.login;
+                    gameAccount.status = 'active';
+                    gameAccount.gameLogin = result.login;
                     gameAccount.gamePassword = result.password;
-
+                    
                     if (!gameAccount.metadata) {
                         gameAccount.metadata = {};
                     }
-                    gameAccount.metadata.login    = result.login;
+                    gameAccount.metadata.login = result.login;
                     gameAccount.metadata.password = result.password;
-
+                    
                     await gameAccount.save();
 
                     return {
@@ -846,7 +836,7 @@ class OrionStarsController {
             console.log('=== getGameBalance (Queued) ===');
             console.log('userId:', userId);
             console.log('gameLogin:', gameLogin);
-
+            
             try {
                 const gameAccount = await GameAccount.findOne({
                     userId,
@@ -901,7 +891,7 @@ class OrionStarsController {
             try {
                 console.log("Recharge (Queued) - Finding game account...");
                 console.log(`Base Amount: $${baseAmount}, Total Amount (with bonus): $${totalAmount}`);
-
+                
                 const gameAccount = await GameAccount.findOne({
                     userId,
                     gameLogin,
@@ -927,13 +917,13 @@ class OrionStarsController {
 
                 if (result && result !== -1) {
                     const updatedGameAccount = await GameAccount.findById(gameAccount._id);
-
+                    
                     console.log(`✅ Recharge successful`);
                     console.log(`   - User paid: $${baseAmount}`);
                     console.log(`   - Bonus: $${totalAmount - baseAmount}`);
                     console.log(`   - Total recharged in game: $${totalAmount}`);
                     console.log(`   - New balance: $${updatedGameAccount.balance}`);
-
+                    
                     return {
                         success: true,
                         data: {
@@ -960,7 +950,7 @@ class OrionStarsController {
         return await this.queueOperation(`redeem:${gameLogin}:${cashoutAmount}`, async () => {
             try {
                 console.log('🔵 redeemFromAccount START:', { userId, gameLogin, totalAmount, cashoutAmount, remark });
-
+                
                 const gameAccount = await GameAccount.findOne({
                     userId,
                     gameLogin,
@@ -994,10 +984,12 @@ class OrionStarsController {
                 if (result && result !== -1) {
                     console.log('✅ Redeem successful, fetching updated balance...');
                     const updatedGameAccount = await GameAccount.findById(gameAccount._id);
-
+                    
                     return {
                         success: true,
-                        data: { newBalance: updatedGameAccount.balance },
+                        data: {
+                            newBalance: updatedGameAccount.balance
+                        },
                         message: 'Redeem completed successfully'
                     };
                 } else {
@@ -1121,35 +1113,39 @@ class OrionStarsController {
 
     async getAdminBalance() {
         return await this.queueOperation('getAdminBalance', async () => {
-            if (this.cache.adminBalance !== null &&
-                this.cache.adminBalanceTimestamp &&
+            // Check cache first
+            if (this.cache.adminBalance !== null && 
+                this.cache.adminBalanceTimestamp && 
                 Date.now() - this.cache.adminBalanceTimestamp < this.cache.cacheDuration) {
                 this.log(`Returning cached admin balance: ${this.cache.adminBalance}`);
                 return this.cache.adminBalance;
             }
-
+            
             const balance = await this._getAdminBalanceCore();
-
+            
+            // Update cache on success
             if (balance !== false && balance !== null) {
                 this.cache.adminBalance = balance;
                 this.cache.adminBalanceTimestamp = Date.now();
             }
-
+            
             return balance;
         });
     }
 
     async _getAdminBalanceCore() {
         try {
+            // Ensure we're on the right page
             const currentPath = await this.page.evaluate(() => location.pathname);
             if (currentPath !== '/Store.aspx') {
-                await this.page.goto('https://orionstars.vip:8781/Store.aspx', {
+                await this.page.goto('https://orionstars.vip:8781/Store.aspx', { 
                     waitUntil: 'domcontentloaded',
-                    timeout: 30000  // ⭐ was 10000
+                    timeout: 10000 
                 });
-                await new Promise(resolve => setTimeout(resolve, 3000)); // ⭐ was 2000
+                await new Promise(resolve => setTimeout(resolve, 2000));
             }
 
+            // Check for session timeout
             const need_login = await this.page.evaluate(() => {
                 const login_pathname = location.pathname === '/default.aspx';
                 if (login_pathname) return true;
@@ -1161,7 +1157,7 @@ class OrionStarsController {
                 throw new Error('Session expired. Please refresh the page.');
             }
 
-            await this.page.waitForSelector('#UserBalance', { timeout: 15000 }); // ⭐ was 10000
+            await this.page.waitForSelector('#UserBalance', { timeout: 10000 });
 
             const balance = await this.page.evaluate(() => {
                 const el = document.querySelector('#UserBalance');
@@ -1191,90 +1187,99 @@ class OrionStarsController {
 
     async getBalance({ id, login }) {
         console.log('getBalance called with:', id, login);
-
+        
         try {
+            // Ensure browser is ready - throws if not
             await this.ensureBrowserReady();
-
+            
             const currentPath = await this.page.evaluate(() => location.pathname);
             console.log('Current path:', currentPath);
-
+            
             if (currentPath !== '/Store.aspx') {
                 console.log('Not on Store.aspx, navigating...');
                 await this.page.goto('https://orionstars.vip:8781/Store.aspx', {
                     waitUntil: 'networkidle2',
-                    timeout: 30000  // ⭐ was 15000
+                    timeout: 15000
                 });
-
-                await this.page.waitForSelector('#frm_main_content', { timeout: 20000 }); // ⭐ was 10000
-                await new Promise(resolve => setTimeout(resolve, 3000)); // ⭐ was 2000
+                
+                await this.page.waitForSelector('#frm_main_content', { timeout: 10000 });
+                await new Promise(resolve => setTimeout(resolve, 2000));
             }
-
+            
+            // Check for session timeout
             const needLogin = await this.page.evaluate(() => {
                 return location.pathname === '/default.aspx';
             });
-
+            
             if (needLogin) {
                 throw new Error('Session expired. Please refresh the page.');
             }
-
+            
+            // Verify iframe is accessible
             console.log('Checking iframe accessibility...');
             const iframeAccessible = await this.isIframeAccessible('#frm_main_content');
-
+            
             if (!iframeAccessible) {
                 throw new Error('Page not ready. Please try again.');
             }
-
+            
             console.log('Searching for account:', login);
-
+            
             await this.page.evaluate(login => {
                 const iframe = document.querySelector('#frm_main_content');
                 const iframe_document = iframe.contentWindow.document;
                 const searchBox = iframe_document.querySelector('#txtSearch');
+                
                 searchBox.value = '';
                 searchBox.value = login;
+                
                 iframe_document.querySelectorAll('#content a')[0].click();
             }, login);
-
+            
             console.log('Search initiated, waiting for results...');
-
+            
             await this.page.waitForFunction((login) => {
                 try {
                     const iframe = document.querySelector('#frm_main_content');
                     if (!iframe) return false;
                     const iframe_document = iframe.contentWindow.document;
                     const items = iframe_document.querySelectorAll('#item tr');
+                    
                     if (items.length < 2) return false;
+                    
                     for (let i = 1; i < items.length; i++) {
                         const tds = items[i].querySelectorAll('td');
                         if (tds.length > 2) {
                             const accountName = tds[2].innerText.trim().toLowerCase();
-                            if (accountName === login.toLowerCase()) return true;
+                            if (accountName === login.toLowerCase()) {
+                                return true;
+                            }
                         }
                     }
                     return false;
                 } catch (e) {
                     return false;
                 }
-            }, { timeout: 15000 }, login); // ⭐ was 8000
-
+            }, { timeout: 8000 }, login);
+            
             console.log('Search results appeared');
-
+            
             await new Promise(resolve => setTimeout(resolve, 1000));
-
+            
             const login_selected = await this.page.evaluate(login => {
                 const iframe = document.querySelector('#frm_main_content');
                 const iframe_document = iframe.contentWindow.document;
                 const items = iframe_document.querySelectorAll('#item tr');
-
+                
                 console.log('Found', items.length, 'rows in search results');
-
+                
                 if (items.length < 2) {
                     console.log('No results found');
                     return false;
                 }
-
+                
                 let matchingRows = [];
-
+                
                 for (let i = 1; i < items.length; i++) {
                     const tds = items[i].querySelectorAll('td');
                     if (tds.length > 2) {
@@ -1284,54 +1289,60 @@ class OrionStarsController {
                         }
                     }
                 }
-
+                
                 console.log('Found', matchingRows.length, 'matching rows');
-
+                
                 if (matchingRows.length === 0) {
                     return false;
                 }
-
+                
                 const latestRowIndex = matchingRows[matchingRows.length - 1];
                 const latestRow = items[latestRowIndex];
                 const tds = latestRow.querySelectorAll('td');
-
+                
                 console.log('Clicking on row', latestRowIndex);
                 tds[0].querySelector('a').click();
                 return true;
             }, login);
-
+            
             console.log('Account selection result:', login_selected);
-
+            
             if (!login_selected) {
                 throw new Error(`Account ${login} not found`);
             }
-
+            
             console.log('Waiting for account details to load...');
-
+            
             await new Promise(resolve => setTimeout(resolve, 2000));
-
+            
             const balance = await this.page.evaluate(() => {
                 try {
                     const iframe = document.querySelector('#frm_main_content');
                     const iframe_document = iframe.contentWindow.document;
                     const balance_element = iframe_document.querySelector('#txtBalance');
-                    if (!balance_element) return false;
-                    const balanceText  = balance_element.value || balance_element.innerText || balance_element.textContent;
+                    
+                    if (!balance_element) {
+                        return false;
+                    }
+                    
+                    const balanceText = balance_element.value || balance_element.innerText || balance_element.textContent;
                     const balanceValue = parseFloat(balanceText);
+                    
                     return isNaN(balanceValue) ? false : balanceValue;
                 } catch (e) {
                     return false;
                 }
             });
-
+            
             console.log('Balance retrieved:', balance);
-
+            
             if (balance === false) {
                 throw new Error('Could not retrieve balance');
             }
-
+            
             this.log(`Current balance for ${login}: ${balance}`);
-
+            
+            // Update database
             try {
                 const gameAccount = await GameAccount.findOne({ gameLogin: login });
                 if (gameAccount) {
@@ -1340,32 +1351,32 @@ class OrionStarsController {
             } catch (dbError) {
                 this.error(`Error updating balance in DB: ${dbError.message}`);
             }
-
+            
             if (id) {
                 await Tasks.approve(id, balance);
             }
-
+            
             console.log('Navigating back to store main page...');
             await this.page.goto('https://orionstars.vip:8781/Store.aspx', {
                 waitUntil: 'networkidle2',
-                timeout: 30000  // ⭐ was 10000
+                timeout: 10000
             });
-
-            await this.page.waitForSelector('#frm_main_content', { timeout: 20000 }); // ⭐ was 10000
+            
+            await this.page.waitForSelector('#frm_main_content', { timeout: 10000 });
             await new Promise(resolve => setTimeout(resolve, 2000));
-
+            
             console.log('Back on main store page, ready for next operation');
-
+            
             return balance;
-
+            
         } catch (error) {
             console.error('Error during get balance:', error.message);
             this.error(`Error during get balance: ${error.message}`);
-
+            
             if (id) {
                 await Tasks.error(id, error.message);
             }
-
+            
             throw error;
         }
     }
@@ -1373,7 +1384,7 @@ class OrionStarsController {
     async getDownloadCode(task) {
         try {
             await this.ensureBrowserReady();
-
+            
             const need_login = await this.page.evaluate(() => {
                 const msg = document.querySelector('#mb_con p');
                 return msg ? msg.innerText.indexOf('Session timeout. Please login again.') >= 0 : false;
@@ -1385,7 +1396,7 @@ class OrionStarsController {
 
             await this.page.goto('https://orionstars.vip:8781/IphoneCode.aspx', {
                 waitUntil: 'domcontentloaded',
-                timeout: 30000  // ⭐ was 10000
+                timeout: 10000
             });
             await new Promise(resolve => setTimeout(resolve, 1000));
 
@@ -1400,6 +1411,7 @@ class OrionStarsController {
 
             this.log(`Download code: ${code}`);
 
+            // Update database
             try {
                 const gameAccount = await GameAccount.findById(task.id);
                 if (gameAccount) {
@@ -1411,8 +1423,9 @@ class OrionStarsController {
             }
 
             await Tasks.approve(task.id, code);
-
-            await this.page.goBack({ waitUntil: 'domcontentloaded', timeout: 15000 }); // ⭐ was 10000
+            
+            // Navigate back
+            await this.page.goBack({ waitUntil: 'domcontentloaded', timeout: 10000 });
 
             return code;
         } catch (error) {
@@ -1420,14 +1433,16 @@ class OrionStarsController {
             await Tasks.error(task.id, error.message);
             throw error;
         }
-    }
+    }// PART 3 OF 3 - Lines 1301-End (FINAL)
+// Paste this AFTER Part 2
 
     async createAccount({ id, userId }) {
         console.log('🔴 CREATE ACCOUNT START:', { id, userId });
-
+        
         try {
             await this.ensureBrowserReady();
-
+            
+            // Generate credentials
             const generateRandomString = () => {
                 const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
                 let result = '';
@@ -1436,71 +1451,50 @@ class OrionStarsController {
                 }
                 return result;
             };
-
-            const login    = `bc${generateRandomString()}_${generateRandomString()}`;
+            
+            const login = `bc${generateRandomString()}_${generateRandomString()}`;
             const password = `bc${generateRandomString()}_${generateRandomString()}`;
-
+            
             console.log(`Generated credentials - Login: ${login}, Password: ${password}`);
 
-            // ── Step 1 ──────────────────────────────────────────
             console.log('Step 1: Checking page state...');
             const currentPath = await this.page.evaluate(() => location.pathname);
             console.log('Current path:', currentPath);
-
+            
             if (currentPath === '/default.aspx') {
                 throw new Error('Session expired. Please refresh the page.');
             }
             console.log('✅ On correct page');
 
-            // ── Step 2 ──────────────────────────────────────────
             console.log('Step 2: Waiting for main iframe to be ready...');
-            await this.page.waitForSelector('#frm_main_content', { timeout: 30000 }); // ⭐ was 10000
-
-            // ⭐ Buffer for Railway's slower network
-            await new Promise(resolve => setTimeout(resolve, 3000));
-
-            // ⭐ readyState only — don't require #txtSearch
+            await this.page.waitForSelector('#frm_main_content', { timeout: 10000 });
+            
             await this.page.waitForFunction(() => {
                 const iframe = document.querySelector('#frm_main_content');
                 if (!iframe) return false;
+                
                 try {
                     const iframe_document = iframe.contentWindow.document;
                     if (!iframe_document) return false;
-                    return iframe_document.readyState === 'complete';
+                    
+                    const hasContent = iframe_document.querySelector('#txtSearch') !== null;
+                    return iframe_document.readyState === 'complete' && hasContent;
                 } catch (e) {
                     return false;
                 }
-            }, { timeout: 30000 }); // ⭐ was 15000
-
-            // ⭐ #txtSearch separately — non-fatal
-            try {
-                await this.page.waitForFunction(() => {
-                    const iframe = document.querySelector('#frm_main_content');
-                    if (!iframe) return false;
-                    try {
-                        const hasContent = iframe.contentWindow.document.querySelector('#txtSearch') !== null;
-                        return hasContent;
-                    } catch (e) {
-                        return false;
-                    }
-                }, { timeout: 15000 });
-            } catch (e) {
-                this.log('⚠️ #txtSearch not found but iframe complete — continuing');
-            }
-
+            }, { timeout: 15000 });
+            
             console.log('✅ Main iframe ready');
             await new Promise(resolve => setTimeout(resolve, 1500));
 
-            // ── Step 3 ──────────────────────────────────────────
             console.log('Step 3: Verifying iframe accessibility...');
             const iframeAccessible = await this.isIframeAccessible('#frm_main_content');
-
+            
             if (!iframeAccessible) {
                 throw new Error('Page not ready. Please try again.');
             }
             console.log('✅ Iframe verified accessible');
 
-            // ── Step 4 ──────────────────────────────────────────
             console.log('Step 4: Clicking Add Account button...');
             await this.page.evaluate(() => {
                 const iframe = document.querySelector('#frm_main_content');
@@ -1512,53 +1506,63 @@ class OrionStarsController {
             });
             console.log('✅ Add Account button clicked');
 
-            // ── Step 5 ──────────────────────────────────────────
             console.log('Step 5: Waiting for account creation dialog...');
-            await this.page.waitForSelector('#DialogBySHF iframe', { timeout: 30000 }); // ⭐ was 15000
+            await this.page.waitForSelector('#DialogBySHF iframe', { timeout: 15000 });
             console.log('✅ Dialog selector found');
+            
+            await new Promise(resolve => setTimeout(resolve, 2000));
 
-            await new Promise(resolve => setTimeout(resolve, 3000)); // ⭐ was 2000
-
-            // ── Step 6 ──────────────────────────────────────────
             console.log('Step 6: Verifying dialog iframe accessibility...');
             await this.page.waitForFunction(() => {
                 const iframe = document.querySelector('#DialogBySHF iframe');
                 if (!iframe) return false;
+                
                 try {
                     const iframe_document = iframe.contentWindow.document;
                     if (!iframe_document) return false;
-                    const accountInput  = iframe_document.querySelector('#txtAccount');
+                    
+                    const accountInput = iframe_document.querySelector('#txtAccount');
                     const nickNameInput = iframe_document.querySelector('#txtNickName');
-                    const passInput     = iframe_document.querySelector('#txtLogonPass');
-                    const pass2Input    = iframe_document.querySelector('#txtLogonPass2');
-                    const button        = iframe_document.querySelector('a');
+                    const passInput = iframe_document.querySelector('#txtLogonPass');
+                    const pass2Input = iframe_document.querySelector('#txtLogonPass2');
+                    const button = iframe_document.querySelector('a');
+                    
                     return accountInput && nickNameInput && passInput && pass2Input && button;
                 } catch (e) {
                     return false;
                 }
-            }, { timeout: 30000 }); // ⭐ was 10000
-
+            }, { timeout: 10000 });
+            
             console.log('✅ Dialog iframe verified and form elements ready');
             await new Promise(resolve => setTimeout(resolve, 500));
 
-            // ── Step 7 ──────────────────────────────────────────
             console.log('Step 7: Filling account creation form...');
             const formFilled = await this.page.evaluate(({ login, password }) => {
                 try {
                     const iframe = document.querySelector('#DialogBySHF iframe');
-                    if (!iframe) return false;
+                    if (!iframe) {
+                        return false;
+                    }
+                    
                     const iframe_document = iframe.contentWindow.document;
-                    const accountInput  = iframe_document.querySelector('#txtAccount');
+                    
+                    const accountInput = iframe_document.querySelector('#txtAccount');
                     const nickNameInput = iframe_document.querySelector('#txtNickName');
-                    const passInput     = iframe_document.querySelector('#txtLogonPass');
-                    const pass2Input    = iframe_document.querySelector('#txtLogonPass2');
-                    const button        = iframe_document.querySelector('a');
-                    if (!accountInput || !nickNameInput || !passInput || !pass2Input || !button) return false;
-                    accountInput.value  = login;
+                    const passInput = iframe_document.querySelector('#txtLogonPass');
+                    const pass2Input = iframe_document.querySelector('#txtLogonPass2');
+                    const button = iframe_document.querySelector('a');
+                    
+                    if (!accountInput || !nickNameInput || !passInput || !pass2Input || !button) {
+                        return false;
+                    }
+                    
+                    accountInput.value = login;
                     nickNameInput.value = login;
-                    passInput.value     = password;
-                    pass2Input.value    = password;
+                    passInput.value = password;
+                    pass2Input.value = password;
+                    
                     button.click();
+                    
                     return true;
                 } catch (e) {
                     return false;
@@ -1570,22 +1574,20 @@ class OrionStarsController {
             }
             console.log('✅ Form filled and submitted');
 
-            // ── Step 8 ──────────────────────────────────────────
             console.log('Step 8: Waiting for result message...');
-            await this.page.waitForSelector('#mb_con p', { timeout: 60000 }); // ⭐ was 30000
-
+            await this.page.waitForSelector('#mb_con p', { timeout: 30000 });
+            
             const message = await this.page.evaluate(() => {
                 const msgEl = document.querySelector('#mb_con p');
                 return msgEl ? msgEl.innerText : 'No message found';
             });
-
+            
             console.log('Result message:', message);
 
-            // ── Step 9 ──────────────────────────────────────────
             console.log('Step 9: Closing dialogs...');
             await this.page.click("#mb_btn_ok");
             await new Promise(resolve => setTimeout(resolve, 500));
-
+            
             try {
                 const closeButton = await this.page.$('#Close');
                 if (closeButton) {
@@ -1595,10 +1597,9 @@ class OrionStarsController {
             } catch (e) {
                 console.log('No close button found or already closed');
             }
-
+            
             await new Promise(resolve => setTimeout(resolve, 500));
 
-            // ── Step 10 ─────────────────────────────────────────
             console.log('Step 10: Processing result...');
             const successMessages = [
                 "Added successfully",
@@ -1612,13 +1613,14 @@ class OrionStarsController {
                 try {
                     const gameAccount = await GameAccount.findById(id);
                     if (gameAccount) {
-                        gameAccount.status       = 'active';
-                        gameAccount.gameLogin    = login;
+                        gameAccount.status = 'active';
+                        gameAccount.gameLogin = login;
                         gameAccount.gamePassword = password;
+                        
                         if (!gameAccount.metadata) {
                             gameAccount.metadata = {};
                         }
-                        gameAccount.metadata.login    = login;
+                        gameAccount.metadata.login = login;
                         gameAccount.metadata.password = password;
                         await gameAccount.save();
                         console.log('✅ Database updated');
@@ -1629,9 +1631,14 @@ class OrionStarsController {
                 }
 
                 await Tasks.approve(id);
+                
                 console.log('✅ CREATE ACCOUNT COMPLETE');
-                return { success: true, login, password };
-
+                return {
+                    success: true,
+                    login: login,
+                    password: password
+                };
+                
             } else {
                 console.log('❌ Account creation failed:', message);
                 this.error(`Error while creating account: ${message}`);
@@ -1654,11 +1661,11 @@ class OrionStarsController {
                 await Tasks.error(id, message);
                 throw new Error(message);
             }
-
+            
         } catch (error) {
             console.log('❌ CREATE ACCOUNT ERROR:', error.message);
             this.error(`Error creating account: ${error.message}`);
-
+            
             try {
                 const gameAccount = await GameAccount.findById(id);
                 if (gameAccount) {
@@ -1672,19 +1679,19 @@ class OrionStarsController {
             } catch (dbError) {
                 console.log('Failed to update DB with error:', dbError.message);
             }
-
+            
             throw error;
         }
-    }// PART 3 OF 3 - paste INSIDE the class, after createAccount()
+    }
 
     async recharge({ id, login, amount, remark, is_manual }) {
         console.log('🔴 RECHARGE START:', { id, login, amount, remark, is_manual });
-
+        
         try {
             await this.ensureBrowserReady();
-
+            
             const currentPath = await this.page.evaluate(() => location.pathname);
-
+            
             if (currentPath === '/default.aspx') {
                 throw new Error('Session expired. Please refresh the page.');
             }
@@ -1707,7 +1714,7 @@ class OrionStarsController {
                 const iframe_document = iframe.contentWindow.document;
                 const items = iframe_document.querySelectorAll('#item tr');
                 return items.length >= 2;
-            }, { timeout: 15000 }, login); // ⭐ was 5000
+            }, { timeout: 5000 }, login);
 
             await new Promise(resolve => setTimeout(resolve, 1000));
 
@@ -1742,13 +1749,14 @@ class OrionStarsController {
                 return true;
             });
 
-            await this.page.waitForSelector('#Container iframe', { timeout: 20000 }); // ⭐ was 10000
+            await this.page.waitForSelector('#Container iframe', { timeout: 10000 });
             await new Promise(resolve => setTimeout(resolve, 1000));
 
             const current_balance = await this.page.evaluate(() => {
                 const iframe = document.querySelector('#Container iframe');
                 const iframe_document = iframe.contentWindow.document;
                 const balance_input = iframe_document.querySelector('#txtLeScore');
+
                 if (!balance_input) return false;
                 return parseInt(balance_input.value);
             });
@@ -1761,14 +1769,15 @@ class OrionStarsController {
                 const iframe = document.querySelector('#Container iframe');
                 const iframe_document = iframe.contentWindow.document;
 
-                const amount_input  = iframe_document.querySelector('#txtAddGold');
-                const remark_input  = iframe_document.querySelector('#txtReason');
-                const button        = iframe_document.querySelector('#Button1');
-                const balance_input = iframe_document.querySelector('#txtLeScore');
+                const amount_input = iframe_document.querySelector('#txtAddGold');
+                const remark_input = iframe_document.querySelector('#txtReason');
+                const button = iframe_document.querySelector('#Button1');
 
                 if (!amount_input || !remark_input || !button) return false;
 
+                const balance_input = iframe_document.querySelector('#txtLeScore');
                 const session_amount = parseInt(balance_input.value) + amount;
+
                 amount_input.value = amount;
                 remark_input.value = remark;
                 button.click();
@@ -1792,7 +1801,7 @@ class OrionStarsController {
 
             if (result === "Confirmed successful") {
                 this.log(`Successfully deposit ${amount} to login ${login}`);
-
+                
                 try {
                     const gameAccount = await GameAccount.findOne({ gameLogin: login });
                     if (gameAccount) {
@@ -1801,12 +1810,12 @@ class OrionStarsController {
                 } catch (dbError) {
                     this.error(`Error updating balance in DB: ${dbError.message}`);
                 }
-
+                
                 await Tasks.approve(id, session_amount);
-
+                
                 this.cache.adminBalance = null;
                 this.cache.adminBalanceTimestamp = null;
-
+                
                 console.log('✅ RECHARGE COMPLETE');
                 return true;
             } else {
@@ -1823,12 +1832,12 @@ class OrionStarsController {
 
     async redeem({ id, login, amount, remark, is_manual = false }) {
         console.log('🔴 REDEEM START:', { id, login, amount, remark, is_manual });
-
+        
         try {
             await this.ensureBrowserReady();
-
+            
             const currentPath = await this.page.evaluate(() => location.pathname);
-
+            
             if (currentPath === '/default.aspx') {
                 throw new Error('Session expired. Please refresh the page.');
             }
@@ -1857,7 +1866,7 @@ class OrionStarsController {
                 const iframe_document = iframe.contentWindow.document;
                 const items = iframe_document.querySelectorAll('#item tr');
                 return items.length >= 2;
-            }, { timeout: 15000 }, login); // ⭐ was 5000
+            }, { timeout: 5000 }, login);
 
             await new Promise(resolve => setTimeout(resolve, 1000));
 
@@ -1871,12 +1880,13 @@ class OrionStarsController {
                 for (let i = 1; i < items.length; i++) {
                     const tds = items[i].querySelectorAll('td');
                     const accountName = tds[2].innerText.trim().toLowerCase();
+                    
                     if (accountName === login.toLowerCase()) {
                         tds[0].querySelector('a').click();
                         return true;
                     }
                 }
-
+                
                 return false;
             }, login);
 
@@ -1894,15 +1904,18 @@ class OrionStarsController {
                 return true;
             });
 
-            await this.page.waitForSelector('#Container iframe', { timeout: 20000 }); // ⭐ was 10000
+            await this.page.waitForSelector('#Container iframe', { timeout: 10000 });
             await new Promise(resolve => setTimeout(resolve, 1000));
 
             const current_balance = await this.page.evaluate(() => {
                 const iframe = document.querySelector('#Container iframe');
                 if (!iframe) return false;
+                
                 const iframe_document = iframe.contentWindow.document;
                 const balance_input = iframe_document.querySelector('#txtLeScore');
+
                 if (!balance_input) return false;
+                
                 const balanceValue = balance_input.value;
                 return parseFloat(parseFloat(balanceValue).toFixed(2));
             });
@@ -1928,11 +1941,12 @@ class OrionStarsController {
             const processed = await this.page.evaluate(({ amount, remark }) => {
                 const iframe = document.querySelector('#Container iframe');
                 if (!iframe) return false;
+                
                 const iframe_document = iframe.contentWindow.document;
 
                 const amount_input = iframe_document.querySelector('#txtAddGold');
                 const remark_input = iframe_document.querySelector('#txtReason');
-                const button       = iframe_document.querySelector('#Button1');
+                const button = iframe_document.querySelector('#Button1');
 
                 if (!amount_input || !remark_input || !button) return false;
 
@@ -1962,7 +1976,7 @@ class OrionStarsController {
             if (result === "Confirmed successful") {
                 const newBalance = parseFloat((current_balance - amount).toFixed(2));
                 this.log(`Successfully cashout ${amount} from login ${login}`);
-
+                
                 try {
                     const gameAccount = await GameAccount.findOne({ gameLogin: login });
                     if (gameAccount) {
@@ -1971,15 +1985,15 @@ class OrionStarsController {
                 } catch (dbError) {
                     this.error(`Error updating balance in DB: ${dbError.message}`);
                 }
-
+                
                 await Tasks.approve(id, newBalance);
-
+                
                 this.cache.adminBalance = null;
                 this.cache.adminBalanceTimestamp = null;
-
+                
                 console.log('✅ REDEEM COMPLETE');
                 return true;
-
+                
             } else {
                 if (result === "Sorry, there is not enough gold for the operator!") {
                     await Tasks.cancel(id);
@@ -1998,12 +2012,12 @@ class OrionStarsController {
 
     async resetPassword({ id, login, password }) {
         console.log('🔴 RESET PASSWORD START:', { id, login, password: '***' });
-
+        
         try {
             await this.ensureBrowserReady();
-
+            
             const currentPath = await this.page.evaluate(() => location.pathname);
-
+            
             if (currentPath === '/default.aspx') {
                 throw new Error('Session expired. Please refresh the page.');
             }
@@ -2032,7 +2046,7 @@ class OrionStarsController {
                 const iframe_document = iframe.contentWindow.document;
                 const items = iframe_document.querySelectorAll('#item tr');
                 return items.length >= 2;
-            }, { timeout: 15000 }, login); // ⭐ was 5000
+            }, { timeout: 5000 }, login);
 
             await new Promise(resolve => setTimeout(resolve, 1000));
 
@@ -2046,12 +2060,13 @@ class OrionStarsController {
                 for (let i = 1; i < items.length; i++) {
                     const tds = items[i].querySelectorAll('td');
                     const accountName = tds[2].innerText.trim().toLowerCase();
+                    
                     if (accountName === login.toLowerCase()) {
                         tds[0].querySelector('a').click();
                         return true;
                     }
                 }
-
+                
                 return false;
             }, login);
 
@@ -2069,36 +2084,43 @@ class OrionStarsController {
                 return true;
             });
 
-            await this.page.waitForSelector('#Container iframe', { timeout: 20000 }); // ⭐ was 10000
+            await this.page.waitForSelector('#Container iframe', { timeout: 10000 });
             await new Promise(resolve => setTimeout(resolve, 1000));
 
             await this.page.waitForFunction(() => {
                 const iframe = document.querySelector('#Container iframe');
                 if (!iframe) return false;
+                
                 try {
                     const iframe_document = iframe.contentWindow.document;
-                    const new_password     = iframe_document.querySelector('#txtConfirmPass');
+                    const new_password = iframe_document.querySelector('#txtConfirmPass');
                     const confirm_password = iframe_document.querySelector('#txtSureConfirmPass');
-                    const button           = iframe_document.querySelector('#Button1');
+                    const button = iframe_document.querySelector('#Button1');
+                    
                     return new_password && confirm_password && button;
                 } catch (e) {
                     return false;
                 }
-            }, { timeout: 20000 }); // ⭐ was 10000
+            }, { timeout: 10000 });
 
             await new Promise(resolve => setTimeout(resolve, 500));
 
             const processed = await this.page.evaluate(({ password }) => {
                 const iframe = document.querySelector('#Container iframe');
                 if (!iframe) return false;
-                const iframe_document  = iframe.contentWindow.document;
-                const new_password     = iframe_document.querySelector('#txtConfirmPass');
+                
+                const iframe_document = iframe.contentWindow.document;
+
+                const new_password = iframe_document.querySelector('#txtConfirmPass');
                 const confirm_password = iframe_document.querySelector('#txtSureConfirmPass');
-                const button           = iframe_document.querySelector('#Button1');
+                const button = iframe_document.querySelector('#Button1');
+
                 if (!new_password || !confirm_password || !button) return false;
-                new_password.value     = password;
+
+                new_password.value = password;
                 confirm_password.value = password;
                 button.click();
+
                 return true;
             }, { password });
 
@@ -2120,7 +2142,7 @@ class OrionStarsController {
 
             if (result === "Modified success!") {
                 this.log(`Password for login ${login} has been restored!`);
-
+                
                 try {
                     const gameAccount = await GameAccount.findOne({ gameLogin: login });
                     if (gameAccount) {
@@ -2130,12 +2152,12 @@ class OrionStarsController {
                 } catch (dbError) {
                     this.error(`Error updating password in DB: ${dbError.message}`);
                 }
-
+                
                 await Tasks.approve(id, password);
-
+                
                 console.log('✅ RESET PASSWORD COMPLETE');
                 return true;
-
+                
             } else {
                 await Tasks.error(id, `password reset failed: ${result}`);
                 throw new Error(`Password reset failed: ${result}`);
@@ -2151,7 +2173,7 @@ class OrionStarsController {
     async getBalanceAdmin(task) {
         try {
             await this.ensureBrowserReady();
-
+            
             const balance = await this.page.evaluate(() => {
                 const el = document.querySelector('#UserBalance');
                 if (!el) return null;
@@ -2163,10 +2185,10 @@ class OrionStarsController {
 
             if (balance !== null && !isNaN(balance)) {
                 this.log(`Current admin balance: ${balance}`);
-
+                
                 this.cache.adminBalance = balance;
                 this.cache.adminBalanceTimestamp = Date.now();
-
+                
                 await Tasks.approve(task.id, balance);
                 return balance;
             }
@@ -2221,7 +2243,6 @@ class OrionStarsController {
             }
 
             return setTimeout(this.checkQueue.bind(this), 5000);
-
         } catch (error) {
             this.error(`Error in checkQueue: ${error.message}`);
             setTimeout(this.checkQueue.bind(this), 5000);
