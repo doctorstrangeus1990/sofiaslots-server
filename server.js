@@ -77,6 +77,30 @@ const allowedOrigins = [
   'https://www.sofiaslots.com',
 ];
 
+
+app.get('/health', (req, res) => {
+  let ip = req.clientIp || req.ip || 'unknown';
+  if (ip === '::1' || ip === '::ffff:127.0.0.1') {
+    ip = '127.0.0.1';
+  }
+  if (ip.startsWith('::ffff:')) {
+    ip = ip.substring(7);
+  }
+
+  res.json({ 
+    success: true, 
+    message: 'Server is running',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+    requestIP: ip,
+    headers: {
+      'x-forwarded-for': req.headers['x-forwarded-for'] || null,
+      'x-real-ip': req.headers['x-real-ip'] || null,
+      'cf-connecting-ip': req.headers['cf-connecting-ip'] || null
+    }
+  });
+});
+
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   
@@ -219,28 +243,7 @@ app.use('/api/unsubscribe', unsubscribeRoutes);
 // HEALTH CHECK
 // ================================
 
-app.get('/health', (req, res) => {
-  let ip = req.clientIp || req.ip || 'unknown';
-  if (ip === '::1' || ip === '::ffff:127.0.0.1') {
-    ip = '127.0.0.1';
-  }
-  if (ip.startsWith('::ffff:')) {
-    ip = ip.substring(7);
-  }
 
-  res.json({ 
-    success: true, 
-    message: 'Server is running',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
-    requestIP: ip,
-    headers: {
-      'x-forwarded-for': req.headers['x-forwarded-for'] || null,
-      'x-real-ip': req.headers['x-real-ip'] || null,
-      'cf-connecting-ip': req.headers['cf-connecting-ip'] || null
-    }
-  });
-});
 
 // ================================
 // 404 HANDLER
