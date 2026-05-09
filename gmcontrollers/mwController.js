@@ -360,6 +360,8 @@ class MilkyWaysController {
             args: [
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
+                "--no-zygote",        // ⭐ reduces forked processes
+    "--single-process",   // ⭐ runs Chrome in single process
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
                 "--disable-web-security",

@@ -1,5 +1,11 @@
 FROM node:20-slim
 
+# Increase process and file limits
+RUN echo "* soft nproc 65535" >> /etc/security/limits.conf && \
+    echo "* hard nproc 65535" >> /etc/security/limits.conf && \
+    echo "* soft nofile 65535" >> /etc/security/limits.conf && \
+    echo "* hard nofile 65535" >> /etc/security/limits.conf
+
 # Install Chromium + all required system libs
 RUN apt-get update && apt-get install -y \
     chromium \
@@ -28,6 +34,7 @@ RUN apt-get update && apt-get install -y \
 # Tell Puppeteer to skip downloading Chrome (use system Chromium instead)
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV NODE_OPTIONS="--max-old-space-size=4096"
 
 WORKDIR /app
 
