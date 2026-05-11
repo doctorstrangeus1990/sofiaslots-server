@@ -34,14 +34,12 @@ class VBlinkController {
         };
 
         // Auto-initialize
-        this.loadCredentials()
-            .then(() => {
-                this.log('✅ Credentials loaded, VBlink controller ready');
-                this.initialized = true;
-            })
-            .catch(err => {
-                this.error(`Failed to load credentials: ${err.message}`);
-            });
+        this.loadAgentCredentials()
+    .then(() => this.initialize())
+    .catch(err => {
+        this.error(`Failed to initialize on startup: ${err.message}`);
+        this.scheduleRetryInitialize();
+    });
 
         // Start queue processing
         this.checkQueue();

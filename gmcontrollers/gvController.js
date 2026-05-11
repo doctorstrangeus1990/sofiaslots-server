@@ -23,7 +23,7 @@ class GameVaultController {
     
     this.keepAlive = true;
     this.lastActivity = Date.now();
-    this.activityTimeout = 5 * 60 * 1000;
+    this.activityTimeout = 15 * 60 * 1000;
     
     this.cache = {
         adminBalance: null,
@@ -57,16 +57,11 @@ class GameVaultController {
 
     // ⭐ AUTO-INITIALIZE - Start browser when controller is created
     this.loadAgentCredentials()
-        .then(() => {
-            this.log('Credentials loaded, starting browser initialization...');
-            return this.initialize();
-        })
-        .then(() => {
-            this.log('✅ Browser initialized and ready');
-        })
-        .catch(err => {
-            this.error(`Failed to initialize on startup: ${err.message}`);
-        });
+    .then(() => this.initialize())
+    .catch(err => {
+        this.error(`Failed to initialize on startup: ${err.message}`);
+        this.scheduleRetryInitialize();
+    });
 
     this.startSessionMonitor();
 
@@ -81,6 +76,22 @@ class GameVaultController {
 
     log(log) { this.logger.log(`${log}`) }
     error(log) { this.logger.error(`${log}`) }
+
+    scheduleRetryInitialize() {
+    this.log('🔄 Scheduling retry initialization in 30 seconds...');
+    setTimeout(async () => {
+        try {
+            if (!this.initialized || !this.browserReady) {
+                this.log('🔄 Retrying initialization...');
+                await this.initialize();
+                this.log('✅ Retry initialization successful');
+            }
+        } catch (err) {
+            this.error(`Retry failed: ${err.message}`);
+            this.scheduleRetryInitialize(); // ⭐ keep retrying forever
+        }
+    }, 30000); // retry every 30 seconds
+}
 
     // RESET AUTH RETRY COUNTER IF ENOUGH TIME HAS PASSED
     resetAuthRetryIfNeeded() {
@@ -320,6 +331,8 @@ class GameVaultController {
         }
     }
 
+    
+
     // ========================================
     // CORE METHODS
     // ========================================
@@ -457,13 +470,23 @@ class GameVaultController {
         });
 
         this.browser.once('disconnected', () => {
-            this.log('Browser disconnected');
-            this.browser = null;
-            this.page = null;
-            this.initialized = false;
-            this.browserReady = false;
-            this.authorized = false;
-        });
+    this.log('Browser disconnected — will auto-reinitialize...');
+    this.browser = null;
+    this.page = null;
+    this.initialized = false;
+    this.browserReady = false;
+    this.authorized = false;
+    this.isProcessingQueue = false;
+
+    // ⭐ Reject any pending queue tasks immediately
+    while (this.requestQueue?.length > 0) {
+        const task = this.requestQueue.shift();
+        task.reject(new Error('Browser disconnected. Please try again.'));
+    }
+
+    // ⭐ Auto reinitialize
+    this.scheduleRetryInitialize();
+});
 
         this.browserReady = true;
         await this.checkAuthorization();
