@@ -5,9 +5,8 @@ const PaymentMethod = require('../models/PaymentMethod');
 const Settings = require('../models/Settings');
 const UserChimeDetails = require('../models/UserChimeDetails');
 const Wallet = require('../models/Wallet');
+const { generateNonce, generateSign, verifySign } = require('../helpers/oxpayHelper');
 const mailTmService = require('../services/mailTmService');
-const cashAppPollingService = require('../services/cashAppPollingService');
-const { makeAuthenticatedRequest } = require('../helpers/cashappAuthHelper');
 const { completeDepositWithBonus } = require('../helpers/depositHelper');
 
 const OXPAY_BASE_URL = 'https://www.bestoxpay.com/axpay/api';
@@ -968,239 +967,6 @@ const oxpayWebhook = async (req, res) => {
         console.error('❌ Error processing OXPay webhook:', error.message);
         // Still return 200/success so OXPay doesn't keep retrying for a server error
         return res.status(200).send('success');
-    }
-};
-
-const cashappProxy = async (req, res) => {
-    try {
-        let { url } = req.query;
-
-        if (!url) {
-            return res.status(400).json({
-                success: false,
-                message: 'URL parameter is required',
-            });
-        }
-
-        const agent = new https.Agent({ rejectUnauthorized: false });
-
-        const response = await axios.get(url, {
-            httpsAgent: agent,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Cache-Control': 'no-cache',
-                Pragma: 'no-cache',
-                Connection: 'keep-alive',
-            },
-            timeout: 30000,
-            maxRedirects: 5,
-            validateStatus: (status) => status < 500,
-        });
-
-        const contentType = response.headers['content-type'] || 'text/html';
-        res.setHeader('Content-Type', contentType);
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('X-Frame-Options', 'ALLOWALL');
-
-        res.send(response.data);
-    } catch (error) {
-        console.error('Proxy error:', error.message);
-
-        res.status(500).send(`
-            <!DOCTYPE html>
-            <html>
-                <head>
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <style>
-                        body {
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                            height: 100vh;
-                            margin: 0;
-                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                            font-family: Arial, sans-serif;
-                        }
-                        .error-box {
-                            background: white;
-                            padding: 30px;
-                            border-radius: 12px;
-                            max-width: 400px;
-                            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-                            text-align: center;
-                        }
-                        h2 { color: #e53e3e; }
-                        p { color: #555; }
-                    </style>
-                </head>
-                <body>
-                    <div class="error-box">
-                        <h2>⚠️ Payment Page Load Failed</h2>
-                        <p>Unable to load payment content. Please open in a desktop browser.</p>
-                    </div>
-                </body>
-            </html>
-        `);
-    }
-};
-
-/**
- * Verify CashApp payment by starting polling
- * This should be called right after createCashappPaymentRequest
- */
-const verifyCashappPayment = async (req, res) => {
-    try {
-        const { transactionId, payOrderNo } = req.body;
-        const userId = req.user.userId;
-
-        // Validation
-        if (!transactionId) {
-            return res.status(400).json({
-                success: false,
-                message: 'Transaction ID is required'
-            });
-        }
-
-        if (!payOrderNo) {
-            return res.status(400).json({
-                success: false,
-                message: 'Payment Order Number is required'
-            });
-        }
-
-        // Find the transaction in wallet
-        const wallet = await Wallet.findOne({ userId });
-        if (!wallet) {
-            return res.status(404).json({
-                success: false,
-                message: 'Wallet not found'
-            });
-        }
-
-        const transaction = wallet.transactions.id(transactionId);
-        if (!transaction) {
-            return res.status(404).json({
-                success: false,
-                message: 'Transaction not found'
-            });
-        }
-
-        if (transaction.paymentMethod !== 'cashapp') {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid payment method for this transaction'
-            });
-        }
-
-        if (transaction.status !== 'pending') {
-            return res.status(400).json({
-                success: false,
-                message: `Transaction is already ${transaction.status}`
-            });
-        }
-
-        // Check if polling is already active
-        if (cashAppPollingService.isPollingActive(userId, transactionId)) {
-            return res.json({
-                success: true,
-                message: 'Payment verification already in progress',
-                data: {
-                    transactionId: transactionId,
-                    status: 'polling'
-                }
-            });
-        }
-
-        // Get creation time for polling (format: YYYY-MM-DD)
-        const createTime = new Date(transaction.createdAt).toISOString().split('T')[0];
-
-        // Start polling (non-blocking, runs in background)
-        cashAppPollingService.startPolling(userId, transactionId, payOrderNo, createTime)
-            .catch(error => {
-                console.error('Error in CashApp polling service:', error);
-            });
-
-        res.json({
-            success: true,
-            message: 'Payment verification started successfully',
-            data: {
-                transactionId: transactionId,
-                payOrderNo: payOrderNo,
-                status: 'polling',
-                estimatedCompletionTime: '1 hour',
-                pollInterval: '30 seconds'
-            }
-        });
-
-    } catch (error) {
-        console.error('Error starting CashApp payment verification:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to start payment verification',
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
-        });
-    }
-};
-
-/**
- * Check CashApp payment status manually
- * Allows users to check the current status of their payment
- */
-const checkCashappPaymentStatus = async (req, res) => {
-    try {
-        const { transactionId } = req.params;
-        const userId = req.user.userId;
-
-        if (!transactionId) {
-            return res.status(400).json({
-                success: false,
-                message: 'Transaction ID is required'
-            });
-        }
-
-        // Find the transaction
-        const wallet = await Wallet.findOne({ userId });
-        if (!wallet) {
-            return res.status(404).json({
-                success: false,
-                message: 'Wallet not found'
-            });
-        }
-
-        const transaction = wallet.transactions.id(transactionId);
-        if (!transaction) {
-            return res.status(404).json({
-                success: false,
-                message: 'Transaction not found'
-            });
-        }
-
-        const isPolling = cashAppPollingService.isPollingActive(userId, transactionId);
-
-        res.json({
-            success: true,
-            data: {
-                transactionId: transactionId,
-                amount: transaction.amount,
-                status: transaction.status,
-                paymentMethod: transaction.paymentMethod,
-                createdAt: transaction.createdAt,
-                completedAt: transaction.completedAt,
-                failedAt: transaction.failedAt,
-                isPolling: isPolling,
-                description: transaction.description
-            }
-        });
-
-    } catch (error) {
-        console.error('Error checking CashApp payment status:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to check payment status',
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
-        });
     }
 };
 
@@ -2328,7 +2094,7 @@ const getAllPaymentConfigs = async (req, res) => {
                 depositChargePercent: method.cryptoConfig?.depositChargePercent || 0,
                 withdrawChargePercent: method.cryptoConfig?.withdrawChargePercent || 0
             // REPLACE the cashapp block with:
-: method.method === 'cashapp' ? {
+            } : method.method === 'cashapp' ? {
     mchId:                 method.cashappConfig?.mchId,
     notifyUrl:             method.cashappConfig?.notifyUrl,
     returnUrl:             method.cashappConfig?.returnUrl || '',
@@ -2418,10 +2184,8 @@ module.exports = {
     processCryptoWithdrawal,
     
     // Cashapp
-    createCashappPaymentRequest,
-    cashappProxy,
-    verifyCashappPayment,
-    checkCashappPaymentStatus,
+     createCashappPaymentRequest,
+    oxpayWebhook,
     
     // Chime
     setupChimePayment,
