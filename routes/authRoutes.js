@@ -1,8 +1,9 @@
 // routes/authRoutes.js
 const express = require('express');
 const {
-  sendOTP,          // ✅ NEW
-  verifyOTP,        // ✅ NEW
+  sendOTP,
+  verifyOTP,
+  resetPassword,   // ✅ NEW
   register,
   login,
   changePassword,
@@ -15,51 +16,32 @@ const authMiddleware = require('../middleware/authMiddleware');
 const router = express.Router();
 
 // ========================================
-// NEW: OTP ROUTES
+// OTP ROUTES
 // ========================================
-
-// @route   POST /api/auth/send-otp
-// @desc    Send OTP to email for verification
-// @access  Public
 router.post('/send-otp', sendOTP);
-
-// @route   POST /api/auth/verify-otp
-// @desc    Verify OTP code
-// @access  Public
 router.post('/verify-otp', verifyOTP);
 
 // ========================================
-// EXISTING ROUTES
+// PASSWORD RESET (public — no auth needed)
 // ========================================
 
-// @route   POST /api/auth/register
-// @desc    Register a new user (NOW REQUIRES VERIFIED EMAIL)
-// @access  Public
-router.post('/register', register);
+// Step 1: POST /api/auth/send-otp          { email, purpose: "password_reset" }
+// Step 2: POST /api/auth/verify-otp        { email, otp, purpose: "password_reset" }
+// Step 3: POST /api/auth/reset-password    { email, otp, newPassword }
+router.post('/reset-password', resetPassword);  // ✅ NEW
 
-// @route   POST /api/auth/login
-// @desc    Login user
-// @access  Public
+// ========================================
+// AUTH ROUTES
+// ========================================
+router.post('/register', register);
 router.post('/login', login);
 
-// @route   GET /api/auth/me
-// @desc    Get current user data
-// @access  Private
+// ========================================
+// PROTECTED ROUTES
+// ========================================
 router.get('/me', authMiddleware, getCurrentUser);
-
-// @route   PUT /api/auth/profile
-// @desc    Update user profile
-// @access  Private
 router.put('/profile', authMiddleware, updateProfile);
-
-// @route   PUT /api/auth/change-password
-// @desc    Change user password
-// @access  Private
 router.put('/change-password', authMiddleware, changePassword);
-
-// @route   PUT /api/auth/change-pin
-// @desc    Change/set withdrawal PIN
-// @access  Private
 router.put('/change-pin', authMiddleware, changePin);
 
 module.exports = router;

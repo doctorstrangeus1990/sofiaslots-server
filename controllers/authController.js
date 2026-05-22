@@ -197,6 +197,85 @@ const verifyOTP = async (req, res) => {
   }
 };
 
+
+const resetPassword = async (req, res) => {
+  const { email, otp, newPassword } = req.body;
+
+  if (!email || !otp || !newPassword) {
+    return res.status(400).json({
+      success: false,
+      message: 'Email, OTP code, and new password are required'
+    });
+  }
+
+  if (newPassword.length < 6) {
+    return res.status(400).json({
+      success: false,
+      message: 'New password must be at least 6 characters long'
+    });
+  }
+
+  const lowercaseEmail = email.toLowerCase().trim();
+
+  try {
+    // 1. Find the most recent verified OTP for password_reset
+    const otpRecord = await OTP.findOne({
+      email: lowercaseEmail,
+      purpose: 'password_reset',
+      verified: true
+    }).sort({ createdAt: -1 });
+
+    if (!otpRecord) {
+      return res.status(400).json({
+        success: false,
+        message: 'No verified reset code found. Please request a new one.'
+      });
+    }
+
+    // 2. Make sure the verified OTP isn't too old (15-minute window after verification)
+    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+    if (otpRecord.updatedAt < fifteenMinutesAgo) {
+      return res.status(400).json({
+        success: false,
+        message: 'Reset session has expired. Please start over.'
+      });
+    }
+
+    // 3. Find the user
+    const user = await User.findOne({ 'profile.email': lowercaseEmail });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'No account found with this email address.'
+      });
+    }
+
+    console.log(`🔑 Resetting password for user: ${user.username} (${user._id})`);
+
+    // 4. Hash and save the new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await User.findByIdAndUpdate(user._id, { $set: { password: hashedPassword } }, { new: true });
+
+    console.log(`✅ Password updated in DB for: ${user.username}`);
+
+    // 5. Clean up — delete all password_reset OTPs for this email
+    await OTP.deleteMany({ email: lowercaseEmail, purpose: 'password_reset' });
+
+    res.status(200).json({
+      success: true,
+      message: 'Password reset successfully. You can now log in with your new password.'
+    });
+
+  } catch (error) {
+    console.error('Error resetting password:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error resetting password',
+      error: error.message
+    });
+  }
+};
+
 // ========================================
 // REGISTER WITH IP TRACKING
 // ========================================
@@ -832,6 +911,7 @@ module.exports = {
   register,
   login,
   changePassword,
+  resetPassword,
   changePin,
   getCurrentUser,
   updateProfile
