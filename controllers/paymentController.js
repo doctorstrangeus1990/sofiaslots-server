@@ -10,6 +10,7 @@ const cashAppPollingService = require('../services/cashAppPollingService');
 const { makeAuthenticatedRequest } = require('../helpers/cashappAuthHelper');
 const { completeDepositWithBonus } = require('../helpers/depositHelper');
 
+const OXPAY_BASE_URL = 'https://www.bestoxpay.com/axpay/api';
 
 // ================================
 // CRYPTO PAYMENT METHODS
