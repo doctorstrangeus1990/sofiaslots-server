@@ -12,7 +12,8 @@ const paymentMethodSchema = new mongoose.Schema({
         type: Boolean,
         default: true
     },
-    // Crypto/Bitcoin payment configuration
+
+    // ─── Crypto/Bitcoin payment configuration ─────────────────────────────────
     cryptoConfig: {
         gatewayUrl: String,
         apiKey: String,
@@ -32,21 +33,13 @@ const paymentMethodSchema = new mongoose.Schema({
             max: 100
         }
     },
-    // Cashapp payment configuration
+
+    // ─── CashApp payment configuration (OXPay gateway) ────────────────────────
     cashappConfig: {
-        apiUrl: String,              // Base URL: https://bo.wiwiusonepay.com/api/mgr
-        authToken: String,            // Current valid token
-        username: String,             // Login username (e.g., "test9999")
-        password: String,             // Hashed password (e.g., "8f95612c5cd1be9f7871841dc0a7b945")
-        mchNo: String,
-        currCode: {
-            type: String,
-            default: 'usd'
-        },
-        wayCode: {
-            type: String,
-            default: 'cashapp'
-        },
+        mchId:     String,   // OXPay Merchant ID
+        secretKey: String,   // OXPay Merchant secret key (used for MD5 signing)
+        notifyUrl: String,   // Public webhook URL OXPay will POST results to
+        returnUrl: String,   // Optional: front-end redirect after payment
         depositChargePercent: {
             type: Number,
             default: 0,
@@ -60,7 +53,8 @@ const paymentMethodSchema = new mongoose.Schema({
             max: 100
         }
     },
-    // Chime payment configuration
+
+    // ─── Chime payment configuration ──────────────────────────────────────────
     chimeConfig: {
         businessChimeTag: String,
         businessChimeName: String,
@@ -79,6 +73,7 @@ const paymentMethodSchema = new mongoose.Schema({
             max: 100
         }
     },
+
     createdAt: {
         type: Date,
         default: Date.now
@@ -94,8 +89,8 @@ const paymentMethodSchema = new mongoose.Schema({
 // Index for efficient queries
 paymentMethodSchema.index({ method: 1 });
 
-// Static method to get payment method config
-paymentMethodSchema.statics.getConfig = async function(method) {
+// ─── Static: get active config for a method ───────────────────────────────────
+paymentMethodSchema.statics.getConfig = async function (method) {
     const paymentMethod = await this.findOne({ method, isActive: true });
     if (!paymentMethod) {
         throw new Error(`${method} payment method not configured`);
@@ -103,44 +98,31 @@ paymentMethodSchema.statics.getConfig = async function(method) {
     return paymentMethod[`${method}Config`];
 };
 
-// Static method to update cashapp auth token
-paymentMethodSchema.statics.updateCashappToken = async function(newToken) {
-    const paymentMethod = await this.findOneAndUpdate(
-        { method: 'cashapp' },
-        { 
-            'cashappConfig.authToken': newToken,
-            updatedAt: new Date()
-        },
-        { new: true }
-    );
-    return paymentMethod;
-};
-
-// Static method to calculate charge amount
-paymentMethodSchema.statics.calculateCharge = async function(method, amount, transactionType) {
+// ─── Static: calculate charge amount ──────────────────────────────────────────
+paymentMethodSchema.statics.calculateCharge = async function (method, amount, transactionType) {
     const config = await this.getConfig(method);
-    const chargePercent = transactionType === 'deposit' 
+    const chargePercent = transactionType === 'deposit'
         ? (config.depositChargePercent || 0)
         : (config.withdrawChargePercent || 0);
-    
+
     const chargeAmount = (amount * chargePercent) / 100;
-    const finalAmount = transactionType === 'deposit' 
-        ? amount - chargeAmount 
+    const finalAmount = transactionType === 'deposit'
+        ? amount - chargeAmount
         : amount + chargeAmount;
-    
+
     return {
         originalAmount: amount,
         chargePercent,
         chargeAmount: parseFloat(chargeAmount.toFixed(2)),
-        finalAmount: parseFloat(finalAmount.toFixed(2))
+        finalAmount:   parseFloat(finalAmount.toFixed(2))
     };
 };
 
-// Static method to save/update payment method config
-paymentMethodSchema.statics.saveConfig = async function(method, config) {
+// ─── Static: save / update a method config ────────────────────────────────────
+paymentMethodSchema.statics.saveConfig = async function (method, config) {
     const paymentMethod = await this.findOneAndUpdate(
         { method },
-        { 
+        {
             [`${method}Config`]: config,
             isActive: true,
             updatedAt: new Date()

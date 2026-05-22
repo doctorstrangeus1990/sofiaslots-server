@@ -705,242 +705,268 @@ const createCashappPaymentRequest = async (req, res) => {
         const { amount } = req.body;
         const userId = req.user.userId;
 
-        console.log('💳 Creating CashApp payment request...');
-        console.log('   Amount:', amount);
-        console.log('   User ID:', userId);
+        console.log('💳 Creating OXPay (CashApp) payment request...');
+        console.log('   Amount:', amount, '| User:', userId);
 
-        // Validation
         if (!amount || amount <= 0) {
-            return res.status(400).json({
-                success: false,
-                message: 'Valid amount is required (must be greater than 0)'
-            });
+            return res.status(400).json({ success: false, message: 'Valid amount is required (must be greater than 0)' });
         }
-
         if (amount < 5) {
-            return res.status(400).json({
-                success: false,
-                message: 'Minimum deposit amount is $5'
-            });
+            return res.status(400).json({ success: false, message: 'Minimum deposit amount is $5' });
         }
-
         if (amount > 10000) {
-            return res.status(400).json({
-                success: false,
-                message: 'Maximum deposit amount is $10,000'
-            });
+            return res.status(400).json({ success: false, message: 'Maximum deposit amount is $10,000' });
         }
 
-        // Get cashapp config from database
+        // Load config
         const cashappConfig = await PaymentMethod.getConfig('cashapp');
-
-        // Validate required config fields
-        if (!cashappConfig.apiUrl || !cashappConfig.username || !cashappConfig.password) {
-            return res.status(500).json({
-                success: false,
-                message: 'CashApp payment gateway not properly configured. Please contact support.'
-            });
+        if (!cashappConfig.mchId || !cashappConfig.secretKey || !cashappConfig.notifyUrl) {
+            return res.status(500).json({ success: false, message: 'CashApp payment gateway not properly configured. Please contact support.' });
         }
 
-        // Adjust amount (subtract 0.01 for integers)
-        let adjustedAmount = amount;
-        if (Number.isInteger(amount)) {
-            adjustedAmount = amount - 0.01;
-        }
+        const amountInCents = Math.round(parseFloat(amount) * 100);
+        const outTradeNo = `cashapp_${userId}_${Date.now()}`;
 
-        const amountInCents = Math.round(adjustedAmount * 100);
-
-        console.log('   Amount in cents:', amountInCents);
-
-        // Prepare request data
-        const requestData = {
-            mchNo: cashappConfig.mchNo,
-            currCode: cashappConfig.currCode,
-            wayCode: cashappConfig.wayCode,
-            amount: amountInCents.toString()
+        // Build payload (no sign yet)
+        const params = {
+            mch_id:       cashappConfig.mchId,
+            out_trade_no: outTradeNo,
+            type:         '1012',           // cashapp
+            amount:       amountInCents,
+            currency:     'USD',
+            subject:      'Deposit',
+            client_ip:    req.ip || req.connection.remoteAddress || '127.0.0.1',
+            extra:        JSON.stringify({ playerId: userId.toString(), platform: 'android' }),
+            notify_url:   cashappConfig.notifyUrl,
+            nonce:        generateNonce(),
         };
 
-        console.log('📡 Making request to /order/handOrder...');
+        if (cashappConfig.returnUrl) {
+            params.return_url = cashappConfig.returnUrl;
+        }
 
-        // Make authenticated request with auto token refresh
+        params.sign = generateSign(params, cashappConfig.secretKey);
+
+        console.log('📡 Calling OXPay pay/create...');
+
         let paymentResponse;
         try {
-            paymentResponse = await makeAuthenticatedRequest(
-                '/order/handOrder',
-                requestData,
-                cashappConfig
+            paymentResponse = await axios.post(
+                `${OXPAY_BASE_URL}/pay/create`,
+                params,
+                { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
             );
-        } catch (error) {
-            console.error('❌ CashApp gateway request failed:', error.message);
-            
-            if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
-                return res.status(504).json({
-                    success: false,
-                    message: 'Payment gateway request timed out. Please try again.'
-                });
+        } catch (err) {
+            console.error('❌ OXPay gateway request failed:', err.message);
+            if (err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT') {
+                return res.status(504).json({ success: false, message: 'Payment gateway timed out. Please try again.' });
             }
-
-            if (error.response) {
-                if (error.response.status >= 500) {
-                    return res.status(502).json({
-                        success: false,
-                        message: 'Payment gateway is currently unavailable. Please try again later.'
-                    });
-                }
-
-                return res.status(500).json({
-                    success: false,
-                    message: error.response.data?.message || 'Payment gateway error occurred',
-                    error: process.env.NODE_ENV === 'development' ? error.response.data : undefined
-                });
-            } else if (error.request) {
-                return res.status(503).json({
-                    success: false,
-                    message: 'Unable to connect to payment gateway. Please try again.'
-                });
+            if (err.response?.status >= 500) {
+                return res.status(502).json({ success: false, message: 'Payment gateway is currently unavailable.' });
             }
-
-            return res.status(500).json({
-                success: false,
-                message: 'Failed to create payment request',
-                error: process.env.NODE_ENV === 'development' ? error.message : undefined
-            });
+            return res.status(500).json({ success: false, message: 'Failed to reach payment gateway.' });
         }
 
-        // Validate response
-        if (paymentResponse.status !== 200) {
-            return res.status(500).json({
-                success: false,
-                message: `Payment gateway error: Received status ${paymentResponse.status}`,
-                error: process.env.NODE_ENV === 'development' ? paymentResponse.data : undefined
-            });
-        }
+        const body = paymentResponse.data;
 
-        if (paymentResponse.data && paymentResponse.data.code !== 200 && paymentResponse.data.code !== '0') {
+        if (body?.code !== 0) {
+            console.error('❌ OXPay error response:', body);
             return res.status(400).json({
                 success: false,
-                message: paymentResponse.data.message || 'Payment gateway returned an error',
-                error: process.env.NODE_ENV === 'development' ? paymentResponse.data : undefined
+                message: body?.message || 'Payment gateway returned an error',
+                error: process.env.NODE_ENV === 'development' ? body : undefined,
             });
         }
 
-        // Parse response data
-        let parsedData = null;
-        let cashierUrl = null;
-        let payOrderNo = null;
-        let mchOrderNo = null;
-        let expireTimestamp = null;
+        const { transaction_id, pay_url } = body.data;
 
-        if (paymentResponse.data && paymentResponse.data.data && paymentResponse.data.data.data) {
-            try {
-                parsedData = JSON.parse(paymentResponse.data.data.data);
-                cashierUrl = parsedData.cashierUrl;
-                payOrderNo = parsedData.payOrderNo;
-                mchOrderNo = parsedData.mchOrderNo;
-                expireTimestamp = parsedData.expireTimestamp;
-            } catch (parseError) {
-                console.error('Error parsing gateway data:', parseError);
-            }
+        if (!pay_url) {
+            return res.status(500).json({ success: false, message: 'Payment gateway did not return a payment URL.' });
         }
 
-        if (!cashierUrl) {
-            return res.status(500).json({
-                success: false,
-                message: 'Payment gateway did not return a payment URL. Please try again.',
-                error: process.env.NODE_ENV === 'development' ? 'Missing cashierUrl in response' : undefined
-            });
-        }
+        console.log('✅ OXPay order created — transaction_id:', transaction_id);
 
-        if (!payOrderNo) {
-            return res.status(500).json({
-                success: false,
-                message: 'Payment gateway did not return an order number. Please try again.',
-                error: process.env.NODE_ENV === 'development' ? 'Missing payOrderNo in response' : undefined
-            });
-        }
-
-        console.log('✅ CashApp payment request created successfully');
-        console.log('   Pay Order No:', payOrderNo);
-
-        // Create transaction in wallet
-        const externalId = `cashapp_${userId}_${Date.now()}`;
-
+        // Persist pending transaction
         const wallet = await Wallet.findOrCreateWallet(userId);
         const transaction = wallet.addTransaction({
-            type: 'deposit',
-            amount: parseFloat(amount),
-            description: `Cashapp deposit - Pending payment`,
+            type:          'deposit',
+            amount:        parseFloat(amount),
+            description:   'CashApp deposit - Pending payment',
             paymentMethod: 'cashapp',
-            status: 'pending',
-            external_id: externalId,
-            fee: 0
+            status:        'pending',
+            external_id:   outTradeNo,   // used to match the webhook later
+            fee:           0,
         });
-        
         await wallet.save();
 
-        console.log('   Transaction ID:', transaction._id);
+        console.log('   Wallet transaction ID:', transaction._id);
 
-        // ✅ AUTO-START POLLING HERE
-        const createTime = new Date(transaction.createdAt).toISOString().split('T')[0];
-        
-        console.log('🔄 Starting automatic polling for payment verification...');
-        console.log('   Transaction ID:', transaction._id.toString());
-        console.log('   Pay Order No:', payOrderNo);
-        console.log('   Create Time:', createTime);
-        
-        // Start polling in background (non-blocking)
-        const cashAppPollingService = require('../services/cashAppPollingService');
-        cashAppPollingService.startPolling(
-            userId, 
-            transaction._id.toString(), 
-            payOrderNo, 
-            createTime
-        ).catch(error => {
-            console.error('❌ Error starting CashApp polling:', error);
-            // Don't fail the request if polling fails to start
-            // The cleanup job will handle timeout after 1 hour
-        });
-        
-        console.log('✅ CashApp polling started successfully (running in background)');
-
-        // Prepare response
-        const formattedResponse = {
+        return res.json({
             success: true,
-            external_id: externalId,
-            transactionId: transaction._id,
-            amount: amount,
-            adjustedAmount: adjustedAmount,
-            amountInCents: amountInCents,
-            paymentMethod: 'cashapp',
-            status: 'pending',
-            cashierUrl: cashierUrl,
-            payOrderNo: payOrderNo,
-            mchOrderNo: mchOrderNo,
-            expireTimestamp: expireTimestamp,
-            gatewayResponse: paymentResponse.data,
-            created_at: new Date().toISOString(),
-            pollingStatus: 'active', // Indicate polling is active
-            pollingInfo: {
-                maxAttempts: 120,
-                intervalSeconds: 30,
-                estimatedCompletionTime: '1 hour'
-            }
-        };
-
-        res.json({
-            success: true,
-            message: 'Cashapp payment request created successfully. Payment verification started automatically.',
-            data: formattedResponse
+            message: 'CashApp payment request created successfully.',
+            data: {
+                transactionId:  transaction._id,
+                outTradeNo,
+                transaction_id,
+                amount,
+                amountInCents,
+                paymentMethod:  'cashapp',
+                status:         'pending',
+                pay_url,
+                created_at:     new Date().toISOString(),
+            },
         });
 
     } catch (error) {
-        console.error('❌ Error creating cashapp payment request:', error.message);
-        
-        res.status(500).json({
+        console.error('❌ Error creating OXPay payment request:', error.message);
+        return res.status(500).json({
             success: false,
             message: 'Failed to create cashapp payment request',
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined,
         });
+    }
+};
+
+const saveCashappConfig = async (req, res) => {
+    try {
+        const {
+            mchId,
+            secretKey,
+            notifyUrl,
+            returnUrl,
+            depositChargePercent,
+            withdrawChargePercent,
+        } = req.body;
+
+        // Merge with existing so partial updates work
+        let existingConfig = null;
+        try {
+            const existing = await PaymentMethod.findOne({ method: 'cashapp' });
+            existingConfig = existing?.cashappConfig;
+        } catch (_) {}
+
+        const finalConfig = {
+            mchId:                 mchId       || existingConfig?.mchId,
+            secretKey:             secretKey   || existingConfig?.secretKey,
+            notifyUrl:             notifyUrl   || existingConfig?.notifyUrl,
+            returnUrl:             returnUrl   || existingConfig?.returnUrl || '',
+            depositChargePercent:  depositChargePercent  !== undefined ? depositChargePercent  : (existingConfig?.depositChargePercent  || 0),
+            withdrawChargePercent: withdrawChargePercent !== undefined ? withdrawChargePercent : (existingConfig?.withdrawChargePercent || 0),
+        };
+
+        if (!finalConfig.mchId || !finalConfig.secretKey || !finalConfig.notifyUrl) {
+            return res.status(400).json({ success: false, message: 'Merchant ID, Secret Key, and Notify URL are required' });
+        }
+
+        try { new URL(finalConfig.notifyUrl); } catch {
+            return res.status(400).json({ success: false, message: 'Invalid Notify URL format' });
+        }
+
+        const paymentMethod = await PaymentMethod.saveConfig('cashapp', finalConfig);
+
+        console.log('✅ OXPay CashApp config saved — mchId:', finalConfig.mchId);
+
+        return res.json({
+            success: true,
+            message: 'CashApp (OXPay) configuration saved successfully',
+            data: {
+                method:                paymentMethod.method,
+                isActive:              paymentMethod.isActive,
+                mchId:                 paymentMethod.cashappConfig.mchId,
+                notifyUrl:             paymentMethod.cashappConfig.notifyUrl,
+                hasSecretKey:          !!paymentMethod.cashappConfig.secretKey,
+                depositChargePercent:  paymentMethod.cashappConfig.depositChargePercent,
+                withdrawChargePercent: paymentMethod.cashappConfig.withdrawChargePercent,
+            },
+        });
+
+    } catch (error) {
+        console.error('Error saving OXPay cashapp config:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to save cashapp configuration',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        });
+    }
+};
+
+const oxpayWebhook = async (req, res) => {
+    try {
+        const data = req.body;
+
+        console.log('📩 OXPay webhook received:', JSON.stringify(data));
+
+        const {
+            mch_id, out_trade_no, transaction_id,
+            amount, currency, paid, paid_at, nonce, sign,
+        } = data;
+
+        // 1. Verify signature
+        const cashappConfig = await PaymentMethod.getConfig('cashapp');
+        const fieldsToVerify = { mch_id, out_trade_no, transaction_id, amount, currency, paid, nonce };
+        if (paid_at) fieldsToVerify.paid_at = paid_at;
+
+        if (!verifySign(fieldsToVerify, sign, cashappConfig.secretKey)) {
+            console.warn('⚠️  OXPay webhook signature invalid — ignoring');
+            return res.status(200).send('success'); // still 200 to stop retries if it's a replay attack
+        }
+
+        // 2. Only act on successful payments
+        if (paid !== 1) {
+            console.log(`ℹ️  OXPay webhook — order ${out_trade_no} not paid (paid=${paid}), ignoring.`);
+            return res.status(200).send('success');
+        }
+
+        // 3. Find matching pending wallet transaction by external_id = out_trade_no
+        const wallet = await Wallet.findOne({
+            'transactions.external_id': out_trade_no,
+            'transactions.paymentMethod': 'cashapp',
+            'transactions.status': 'pending',
+        });
+
+        if (!wallet) {
+            console.warn(`⚠️  OXPay webhook — no pending transaction found for out_trade_no: ${out_trade_no}`);
+            return res.status(200).send('success'); // must still return success
+        }
+
+        const pendingTx = wallet.transactions.find(
+            t => t.external_id === out_trade_no && t.paymentMethod === 'cashapp' && t.status === 'pending'
+        );
+
+        if (!pendingTx) {
+            console.warn(`⚠️  OXPay webhook — transaction already processed: ${out_trade_no}`);
+            return res.status(200).send('success');
+        }
+
+        console.log(`✅ OXPay webhook — completing deposit for user: ${wallet.userId}, tx: ${pendingTx._id}`);
+
+        // 4. Complete with bonus (re-uses your existing helper)
+        const { completeDepositWithBonus } = require('../helpers/depositHelper');
+        await completeDepositWithBonus(
+            wallet._id,
+            pendingTx._id,
+            {
+                completedBy: 'OXPay Webhook',
+                isManual: false,
+                metadata: {
+                    out_trade_no,
+                    transaction_id,
+                    paid_at,
+                    verifiedBy: 'oxpay_webhook',
+                    verifiedAt: new Date().toISOString(),
+                },
+            }
+        );
+
+        console.log(`💰 Deposit completed — out_trade_no: ${out_trade_no}`);
+
+        // OXPay REQUIRES the plain string "success" — nothing else
+        return res.status(200).send('success');
+
+    } catch (error) {
+        console.error('❌ Error processing OXPay webhook:', error.message);
+        // Still return 200/success so OXPay doesn't keep retrying for a server error
+        return res.status(200).send('success');
     }
 };
 
@@ -2191,120 +2217,6 @@ const saveCryptoConfig = async (req, res) => {
     }
 };
 
-// Updated saveCashappConfig in paymentController.js
-
-const saveCashappConfig = async (req, res) => {
-    try {
-        const { 
-            apiUrl,           // Base URL: https://bo.wiwiusonepay.com/api/mgr
-            authToken,        // Optional initial token
-            username,         // Login username (e.g., "test9999")
-            password,         // Hashed password (e.g., "8f95612c5cd1be9f7871841dc0a7b945")
-            mchNo, 
-            currCode, 
-            wayCode,
-            depositChargePercent,
-            withdrawChargePercent 
-        } = req.body;
-        console.log(req.body)
-        // Get existing config
-        let existingConfig = null;
-        try {
-            const existingMethod = await PaymentMethod.findOne({ method: 'cashapp' });
-            existingConfig = existingMethod?.cashappConfig;
-        } catch (err) {
-            // No existing config, will create new
-        }
-
-        // Merge with existing config for fields not provided
-        const finalConfig = {
-            apiUrl: apiUrl || existingConfig?.apiUrl,
-            authToken: authToken || existingConfig?.authToken || '',
-            username: username || existingConfig?.username,
-            password: password || existingConfig?.password,
-            mchNo: mchNo || existingConfig?.mchNo,
-            currCode: currCode || existingConfig?.currCode || 'usd',
-            wayCode: wayCode || existingConfig?.wayCode || 'cashapp',
-            depositChargePercent: depositChargePercent !== undefined ? depositChargePercent : (existingConfig?.depositChargePercent || 0),
-            withdrawChargePercent: withdrawChargePercent !== undefined ? withdrawChargePercent : (existingConfig?.withdrawChargePercent || 0)
-        };
-
-        // Validate required fields after merge
-        if (!finalConfig.apiUrl || !finalConfig.username || !finalConfig.password || !finalConfig.mchNo) {
-            return res.status(400).json({
-                success: false,
-                message: 'API URL, Username, Password, and Merchant Number are required'
-            });
-        }
-
-        // Validate URL format
-        try {
-            new URL(finalConfig.apiUrl);
-        } catch (error) {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid API URL format'
-            });
-        }
-
-        // Validate charge percentages
-        if (finalConfig.depositChargePercent < 0 || finalConfig.depositChargePercent > 100) {
-            return res.status(400).json({
-                success: false,
-                message: 'Deposit charge percent must be between 0 and 100'
-            });
-        }
-
-        if (finalConfig.withdrawChargePercent < 0 || finalConfig.withdrawChargePercent > 100) {
-            return res.status(400).json({
-                success: false,
-                message: 'Withdraw charge percent must be between 0 and 100'
-            });
-        }
-
-        const paymentMethod = await PaymentMethod.saveConfig('cashapp', {
-            apiUrl: finalConfig.apiUrl.trim(),
-            authToken: finalConfig.authToken.trim(),
-            username: finalConfig.username.trim(),
-            password: finalConfig.password.trim(),
-            mchNo: finalConfig.mchNo.trim(),
-            currCode: finalConfig.currCode,
-            wayCode: finalConfig.wayCode,
-            depositChargePercent: finalConfig.depositChargePercent,
-            withdrawChargePercent: finalConfig.withdrawChargePercent
-        });
-
-        console.log('✅ CashApp configuration saved successfully');
-        console.log('   API URL:', finalConfig.apiUrl);
-        console.log('   Username:', finalConfig.username);
-        console.log('   Merchant No:', finalConfig.mchNo);
-
-        res.json({
-            success: true,
-            message: 'Cashapp payment configuration saved successfully',
-            data: {
-                method: paymentMethod.method,
-                isActive: paymentMethod.isActive,
-                apiUrl: paymentMethod.cashappConfig.apiUrl,
-                username: paymentMethod.cashappConfig.username,
-                hasPassword: !!paymentMethod.cashappConfig.password,
-                hasAuthToken: !!paymentMethod.cashappConfig.authToken,
-                mchNo: paymentMethod.cashappConfig.mchNo,
-                depositChargePercent: paymentMethod.cashappConfig.depositChargePercent,
-                withdrawChargePercent: paymentMethod.cashappConfig.withdrawChargePercent
-            }
-        });
-
-    } catch (error) {
-        console.error('Error saving cashapp config:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to save cashapp configuration',
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
-        });
-    }
-};
-
 // Save chime config (UPDATED VERSION - allows partial updates)
 const saveChimeConfig = async (req, res) => {
     try {
@@ -2414,18 +2326,15 @@ const getAllPaymentConfigs = async (req, res) => {
                 password: method.cryptoConfig?.password || '',
                 depositChargePercent: method.cryptoConfig?.depositChargePercent || 0,
                 withdrawChargePercent: method.cryptoConfig?.withdrawChargePercent || 0
-            } : method.method === 'cashapp' ? {
-                apiUrl: method.cashappConfig?.apiUrl,
-                mchNo: method.cashappConfig?.mchNo,
-                currCode: method.cashappConfig?.currCode,
-                wayCode: method.cashappConfig?.wayCode,
-                username: method.cashappConfig?.username,
-                // ✅ RETURN actual values
-                authToken: method.cashappConfig?.authToken || '',
-                password: method.cashappConfig?.password || '',
-                depositChargePercent: method.cashappConfig?.depositChargePercent || 0,
-                withdrawChargePercent: method.cashappConfig?.withdrawChargePercent || 0
-            } : method.method === 'chime' ? {
+            // REPLACE the cashapp block with:
+: method.method === 'cashapp' ? {
+    mchId:                 method.cashappConfig?.mchId,
+    notifyUrl:             method.cashappConfig?.notifyUrl,
+    returnUrl:             method.cashappConfig?.returnUrl || '',
+    secretKey:             method.cashappConfig?.secretKey || '',
+    depositChargePercent:  method.cashappConfig?.depositChargePercent || 0,
+    withdrawChargePercent: method.cashappConfig?.withdrawChargePercent || 0,
+} : method.method === 'chime' ? {
                 businessChimeTag: method.chimeConfig?.businessChimeTag,
                 businessChimeName: method.chimeConfig?.businessChimeName,
                 mailTmUsername: method.chimeConfig?.mailTmUsername,

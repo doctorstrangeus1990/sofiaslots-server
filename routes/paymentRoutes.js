@@ -9,11 +9,11 @@ const adminMiddleware = require('../middleware/adminMiddleware');
 // PUBLIC ROUTES (No Auth Required)
 // ================================
 
-// Crypto webhook (called by payment gateway)
+// Crypto webhook (called by crypto payment gateway)
 router.post('/crypto/webhook', paymentController.confirmPayment);
 
-// Cashapp proxy
-router.get('/cashapp/proxy', paymentController.cashappProxy);
+// OXPay webhook (called by OXPay platform — must be public, no auth)
+router.post('/cashapp/webhook', paymentController.oxpayWebhook);
 
 // ================================
 // USER ROUTES (Auth Required)
@@ -23,10 +23,11 @@ router.get('/cashapp/proxy', paymentController.cashappProxy);
 router.get('/crypto/list', authMiddleware, paymentController.getCryptoList);
 router.post('/crypto/create', authMiddleware, paymentController.createPaymentRequest);
 
-// Cashapp routes
+// CashApp (OXPay) routes
 router.post('/cashapp/create', authMiddleware, paymentController.createCashappPaymentRequest);
-router.post('/cashapp/verify', authMiddleware, paymentController.verifyCashappPayment); // NEW - Start verification polling
-router.get('/cashapp/status/:transactionId', authMiddleware, paymentController.checkCashappPaymentStatus); // NEW - Check payment status
+// REMOVED: /cashapp/verify  (no longer needed — OXPay pushes webhook)
+// REMOVED: /cashapp/status  (no longer needed — OXPay pushes webhook)
+// REMOVED: /cashapp/proxy   (no longer needed — pay_url goes directly to OXPay)
 
 // Chime routes
 router.post('/chime/setup', authMiddleware, paymentController.setupChimePayment);
@@ -41,19 +42,10 @@ router.get('/methods', authMiddleware, paymentController.getPaymentMethods);
 // ADMIN ROUTES (Admin Auth Required)
 // ================================
 
-// Get all payment configurations
 router.get('/admin/configs', authMiddleware, adminMiddleware, paymentController.getAllPaymentConfigs);
-
-// Save crypto configuration
 router.post('/admin/crypto/config', authMiddleware, adminMiddleware, paymentController.saveCryptoConfig);
-
-// Save cashapp configuration
 router.post('/admin/cashapp/config', authMiddleware, adminMiddleware, paymentController.saveCashappConfig);
-
-// Save chime configuration
 router.post('/admin/chime/config', authMiddleware, adminMiddleware, paymentController.saveChimeConfig);
-
-// Toggle payment method active status
 router.patch('/admin/:method/toggle', authMiddleware, adminMiddleware, paymentController.togglePaymentMethod);
 
 module.exports = router;

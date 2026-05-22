@@ -1,4 +1,3 @@
-
 // require('./utils/railwayPatch'); // ← add this as the FIRST require
 
 const express = require('express');
@@ -23,22 +22,22 @@ const PORT = process.env.PORT || 5000;
 // IMPORT ROUTES
 // ================================
 
-const authRoutes = require('./routes/authRoutes');
-const userRoutes = require('./routes/userRoutes');
-const settingsRoutes = require('./routes/settingsRoutes');
-const gameRoutes = require('./routes/gameRoutes');
-const walletRoutes = require('./routes/walletRoutes');
-const adminAuthRoutes = require('./routes/adminAuthRoutes');
-const adminDataRoutes = require('./routes/adminDataRoutes');
+const authRoutes          = require('./routes/authRoutes');
+const userRoutes          = require('./routes/userRoutes');
+const settingsRoutes      = require('./routes/settingsRoutes');
+const gameRoutes          = require('./routes/gameRoutes');
+const walletRoutes        = require('./routes/walletRoutes');
+const adminAuthRoutes     = require('./routes/adminAuthRoutes');
+const adminDataRoutes     = require('./routes/adminDataRoutes');
 const adminSettingsRoutes = require('./routes/adminSettingsRoutes');
-const gameAdminRoutes = require('./routes/gameAdminRoutes');
-const publicRoutes = require('./routes/publicRoutes');
-const spinWheelRoutes = require('./routes/spinWheelRoutes');
-const adminSpinRoutes = require('./routes/adminSpinRoutes');
-const referralRoutes = require('./routes/referralRoutes');
-const paymentRoutes = require('./routes/paymentRoutes');
-const cashoutRulesRoutes = require('./routes/CashoutRulesRoutes');
-const unsubscribeRoutes = require('./routes/unsubscribeRoutes');
+const gameAdminRoutes     = require('./routes/gameAdminRoutes');
+const publicRoutes        = require('./routes/publicRoutes');
+const spinWheelRoutes     = require('./routes/spinWheelRoutes');
+const adminSpinRoutes     = require('./routes/adminSpinRoutes');
+const referralRoutes      = require('./routes/referralRoutes');
+const paymentRoutes       = require('./routes/paymentRoutes');
+const cashoutRulesRoutes  = require('./routes/CashoutRulesRoutes');
+const unsubscribeRoutes   = require('./routes/unsubscribeRoutes');
 
 // ================================
 // IMPORT CRON JOBS
@@ -80,18 +79,13 @@ const allowedOrigins = [
   'https://www.sofiaslots.com',
 ];
 
-
 app.get('/health', (req, res) => {
   let ip = req.clientIp || req.ip || 'unknown';
-  if (ip === '::1' || ip === '::ffff:127.0.0.1') {
-    ip = '127.0.0.1';
-  }
-  if (ip.startsWith('::ffff:')) {
-    ip = ip.substring(7);
-  }
+  if (ip === '::1' || ip === '::ffff:127.0.0.1') ip = '127.0.0.1';
+  if (ip.startsWith('::ffff:')) ip = ip.substring(7);
 
-  res.json({ 
-    success: true, 
+  res.json({
+    success: true,
     message: 'Server is running',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
@@ -106,19 +100,17 @@ app.get('/health', (req, res) => {
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  
+
   if (allowedOrigins.includes(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
   }
-  
+
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-  
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  
+
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+
   next();
 });
 
@@ -133,31 +125,26 @@ app.use(cookieParser());
 // ================================
 // STATIC FILES — BEFORE ROUTES
 // ================================
-// ================================
-// STATIC FILES — BEFORE ROUTES
-// ================================
+
 app.use('/uploads', (req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Cross-Origin-Resource-Policy', 'cross-origin');
-    next();
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Cross-Origin-Resource-Policy', 'cross-origin');
+  next();
 }, express.static('/app/public/uploads'));
 
 // ================================
 // IP LOGGING MIDDLEWARE
 // ================================
+
 app.use((req, res, next) => {
   let ip = req.clientIp || req.ip || 'unknown';
-  if (ip === '::1' || ip === '::ffff:127.0.0.1') {
-    ip = '127.0.0.1';
-  }
-  if (ip.startsWith('::ffff:')) {
-    ip = ip.substring(7);
-  }
-  
+  if (ip === '::1' || ip === '::ffff:127.0.0.1') ip = '127.0.0.1';
+  if (ip.startsWith('::ffff:')) ip = ip.substring(7);
+
   if (process.env.NODE_ENV === 'development') {
     console.log(`${req.method} ${req.path} from ${ip}`);
   }
-  
+
   next();
 });
 
@@ -171,9 +158,10 @@ const connectDB = async () => {
       process.env.MONGODB_URI || 'mongodb://localhost:27017/belucky-casino'
     );
     console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
-    
+
+    // Start background jobs
     startChimeVerificationJob();
-    
+
   } catch (error) {
     console.error('❌ Database connection failed:', error);
     process.exit(1);
@@ -185,31 +173,20 @@ connectDB();
 // ================================
 // DEBUG ROUTE — REMOVE AFTER FIXING
 // ================================
+
 app.get('/debug-paths', (req, res) => {
   let files = [];
   let imagesFiles = [];
   const uploadsPath = '/app/public/uploads';
-  const imagesPath = '/app/public/uploads/images';
+  const imagesPath  = '/app/public/uploads/images';
 
-  try {
-    files = fs.readdirSync(uploadsPath);
-  } catch(e) {
-    files = ['ERROR: ' + e.message];
-  }
+  try { files = fs.readdirSync(uploadsPath); }
+  catch (e) { files = ['ERROR: ' + e.message]; }
 
-  try {
-    imagesFiles = fs.readdirSync(imagesPath);
-  } catch(e) {
-    imagesFiles = ['ERROR: ' + e.message];
-  }
+  try { imagesFiles = fs.readdirSync(imagesPath); }
+  catch (e) { imagesFiles = ['ERROR: ' + e.message]; }
 
-  res.json({
-    __dirname,
-    cwd: process.cwd(),
-    uploadsPath,
-    uploadsFiles: files,
-    imagesFiles,
-  });
+  res.json({ __dirname, cwd: process.cwd(), uploadsPath, uploadsFiles: files, imagesFiles });
 });
 
 // ================================
@@ -217,36 +194,30 @@ app.get('/debug-paths', (req, res) => {
 // ================================
 
 app.post('/api/test-post', (req, res) => {
-  res.json({ 
-    success: true, 
-    message: 'POST request working', 
+  res.json({
+    success: true,
+    message: 'POST request working',
     body: req.body,
     ip: req.clientIp || req.ip
   });
 });
 
-app.use('/api/auth', authRoutes);
-app.use('/api/user', userRoutes);
-app.use('/api/settings', settingsRoutes);
-app.use('/api/games', gameRoutes);
-app.use('/api/wallet', walletRoutes);
+app.use('/api/auth',           authRoutes);
+app.use('/api/user',           userRoutes);
+app.use('/api/settings',       settingsRoutes);
+app.use('/api/games',          gameRoutes);
+app.use('/api/wallet',         walletRoutes);
 app.use('/api/bonus-settings', adminSettingsRoutes);
 app.use('/api/admin/spin-wheel', adminSpinRoutes);
-app.use('/api/admin-data', adminDataRoutes);
-app.use('/api/admin', adminAuthRoutes);
-app.use('/api/admin', gameAdminRoutes);
-app.use('/api/public', publicRoutes);
-app.use('/api/spin-wheel', spinWheelRoutes);
-app.use('/api/referral', referralRoutes);
-app.use('/api/payment', paymentRoutes);
-app.use('/api/cashout-rules', cashoutRulesRoutes);
-app.use('/api/unsubscribe', unsubscribeRoutes);
-
-// ================================
-// HEALTH CHECK
-// ================================
-
-
+app.use('/api/admin-data',     adminDataRoutes);
+app.use('/api/admin',          adminAuthRoutes);
+app.use('/api/admin',          gameAdminRoutes);
+app.use('/api/public',         publicRoutes);
+app.use('/api/spin-wheel',     spinWheelRoutes);
+app.use('/api/referral',       referralRoutes);
+app.use('/api/payment',        paymentRoutes);
+app.use('/api/cashout-rules',  cashoutRulesRoutes);
+app.use('/api/unsubscribe',    unsubscribeRoutes);
 
 // ================================
 // 404 HANDLER
@@ -301,7 +272,7 @@ process.on('SIGINT', () => {
 app.listen(PORT, () => {
   console.log('╔════════════════════════════════════════════════════════════╗');
   console.log('║                                                            ║');
-  console.log(`║  🚀 BeLucky Casino Server                                  ║`);
+  console.log('║  🚀 BeLucky Casino Server                                  ║');
   console.log(`║  📍 Port: ${PORT.toString().padEnd(46)} ║`);
   console.log(`║  🌍 Environment: ${(process.env.NODE_ENV || 'development').padEnd(39)} ║`);
   console.log(`║  ⏰ Started: ${new Date().toLocaleString().padEnd(41)} ║`);
@@ -309,11 +280,15 @@ app.listen(PORT, () => {
   console.log('╠════════════════════════════════════════════════════════════╣');
   console.log('║  📋 AVAILABLE PAYMENT METHODS:                             ║');
   console.log('║     • Cryptocurrency (Bitcoin, ETH, LTC, etc.)             ║');
-  console.log('║     • CashApp                                              ║');
+  console.log('║     • CashApp (via OXPay gateway)                          ║');
   console.log('║     • Chime (Auto-verification enabled)                    ║');
   console.log('║                                                            ║');
   console.log('║  🔄 BACKGROUND JOBS:                                       ║');
   console.log('║     • Chime payment verification (Every 2 minutes)         ║');
+  console.log('║                                                            ║');
+  console.log('║  🎣 WEBHOOKS:                                              ║');
+  console.log('║     • Crypto:   POST /api/payment/crypto/webhook           ║');
+  console.log('║     • OXPay:    POST /api/payment/cashapp/webhook          ║');
   console.log('║                                                            ║');
   console.log('║  🎁 BONUS SYSTEM:                                          ║');
   console.log('║     • Signup bonus (configurable)                          ║');
