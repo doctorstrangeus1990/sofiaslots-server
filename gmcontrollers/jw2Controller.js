@@ -9,7 +9,6 @@ const GameAccount = require('../models/GameAccount.js');
 const Game = require('../models/Game.js');
 const path = require('path');
 const axios = require('axios');
-const { int } = require('../utils/types.js');
 
 class Juwa2Controller {
     constructor() {
@@ -401,7 +400,7 @@ class Juwa2Controller {
     async loadAgentCredentials() {
         try {
             const game = await Game.findOne({
-                shortcode: 'JUWA2',
+                shortcode: 'JW2',
                 status: { $in: ['active', 'maintenance'] }
             });
 
@@ -483,24 +482,65 @@ class Juwa2Controller {
             } catch (e) {
                 this.log(`Error closing existing browser: ${e.message}`);
             }
+            this.browser = null;
+            this.page = null;
         }
 
         this.browser = await Puppeteer.launch({
-            headless: true,
-            args: ["--fast-start", "--disable-extensions", "--no-sandbox"],
-            ignoreHTTPSErrors: true,
-            ignoreDefaultArgs: ['--disable-extensions']
+            headless: 'new',
+            args: [
+                "--fast-start",
+                "--disable-extensions",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--no-zygote",
+                "--single-process",
+                "--disable-dev-shm-usage",
+                "--disable-gpu"
+            ],
+            ignoreHTTPSErrors: true
         });
 
         this.page = await this.browser.newPage();
         await this.page.setViewport({ width: 1312, height: 800 });
 
-        // Load cookies if present
         const cookiesPath = path.join(__dirname, 'cookiesjuwa2.json');
         if (existsSync(cookiesPath)) {
-            const cookies_parsed = JSON.parse(readFileSync(cookiesPath).toString());
-            await this.page.setCookie(...cookies_parsed);
+            try {
+                const cookies_parsed = JSON.parse(readFileSync(cookiesPath).toString());
+                await this.page.setCookie(...cookies_parsed);
+                this.log('Cookies loaded successfully');
+            } catch (error) {
+                this.log('Error loading cookies, continuing without them');
+            }
         }
+
+        this.page.on('error', (error) => {
+            this.error(`Page crashed: ${error.message}`);
+            this.browserReady = false;
+            this.initialized = false;
+        });
+
+        this.page.on('close', () => {
+            this.log('Page closed unexpectedly');
+            this.browserReady = false;
+            this.initialized = false;
+        });
+
+        this.browser.once('disconnected', () => {
+            this.log('Browser disconnected — will auto-reinitialize...');
+            this.browser = null;
+            this.page = null;
+            this.initialized = false;
+            this.browserReady = false;
+            this.authorized = false;
+            this.isProcessingQueue = false;
+            while (this.requestQueue?.length > 0) {
+                const task = this.requestQueue.shift();
+                task.reject(new Error('Browser disconnected. Please try again.'));
+            }
+            this.scheduleRetryInitialize();
+        });
 
         await this.checkAuthorization();
     }
@@ -760,7 +800,7 @@ class Juwa2Controller {
             login: user.login_name,
             id: user.user_id,
             balance: user.balance,
-            balance_int: int(user.balance),
+            balance_int: parseInt(user.balance, 10) || 0,
             bonus: user.bonus
         };
     }
@@ -827,17 +867,17 @@ class Juwa2Controller {
                 return -1;
             }
             this.error(`Unknown response from the server ${JSON.stringify(response)}`);
-            await Tasks.error(id, response.msg || `Error code: ${response.code}`);
+            if (id) await Tasks.error(id, response.msg || `Error code: ${response.code}`);
             return false;
         }
 
         if (response.msg !== 'success') {
             this.error(`Unknown response from the server ${JSON.stringify(response)}`);
-            await Tasks.error(id, response.msg || 'createUser failed');
+            if (id) await Tasks.error(id, response.msg || 'createUser failed');
             return false;
         }
 
-        await Tasks.approve(id, { login, password });
+        if (id) await Tasks.approve(id, { login, password });
         this.log(`Created a user ${login} in ${this.processing(start_at)} s`);
         return true;
     }
@@ -868,17 +908,17 @@ class Juwa2Controller {
                 return -1;
             }
             this.error(`Unknown response from the server ${JSON.stringify(response)}`);
-            await Tasks.error(id, response.msg || 'resetPassword failed');
+            if (id) await Tasks.error(id, response.msg || 'resetPassword failed');
             return false;
         }
 
         if (response.msg !== 'success') {
             this.error(`Unknown response from the server ${JSON.stringify(response)}`);
-            await Tasks.error(id, response.msg || 'resetPassword failed');
+            if (id) await Tasks.error(id, response.msg || 'resetPassword failed');
             return false;
         }
 
-        await Tasks.approve(id, { password, balance: user.balance });
+        if (id) await Tasks.approve(id, { password, balance: user.balance });
         this.log(`The login password has been restored ${login} in ${this.processing(start_at)} s.`);
         return true;
     }
@@ -896,15 +936,15 @@ class Juwa2Controller {
         if (agentBalance === -1) return -1;
 
         if (user.balance >= 2) {
-            await Tasks.reject(id, 'balance', user.balance);
+            if (id) await Tasks.reject(id, 'balance', user.balance);
             return false;
         }
         if (user.bonus > 0) {
-            await Tasks.reject(id, 'user_in_bonus');
+            if (id) await Tasks.reject(id, 'user_in_bonus');
             return false;
         }
         if (agentBalance < amount) {
-            await Tasks.reject(id, 'store_balance');
+            if (id) await Tasks.reject(id, 'store_balance');
             return false;
         }
 
@@ -937,7 +977,7 @@ class Juwa2Controller {
             return false;
         }
 
-        await Tasks.approve(id, parseFloat(response.data.Balance));
+        if (id) await Tasks.approve(id, parseFloat(response.data.Balance));
         this.log(`Recharged $${amount} for ${login} in ${this.processing(start_at)} s`);
         return true;
     }
@@ -951,11 +991,11 @@ class Juwa2Controller {
         if (user === -1) return -1;
 
         if (user.balance_int < minimal) {
-            await Tasks.reject(id, 'minimal', minimal);
+            if (id) await Tasks.reject(id, 'minimal', minimal);
             return false;
         }
         if (user.bonus > 0) {
-            await Tasks.reject(id, 'user_in_bonus');
+            if (id) await Tasks.reject(id, 'user_in_bonus');
             return false;
         }
 
@@ -988,7 +1028,7 @@ class Juwa2Controller {
             return false;
         }
 
-        await Tasks.approve(id, user.balance_int);
+        if (id) await Tasks.approve(id, user.balance_int);
         this.log(`Redeemed $${user.balance_int} from ${login} in ${this.processing(start_at)} s`);
         return true;
     }
@@ -1014,10 +1054,79 @@ class Juwa2Controller {
     // PUBLIC API METHODS (called by gameController)
     // ========================================
 
+    // Standard interface method that gameController.js calls.
+    // Generates credentials, saves the GameAccount, creates the user on the
+    // Juwa2 panel, and returns the shape the route expects.
+    async createGameAccount(userId, game) {
+        const generateRandomString = () => {
+            const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+            let result = '';
+            for (let i = 0; i < 4; i++) {
+                result += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return result;
+        };
+
+        const login = `bc${generateRandomString()}${generateRandomString()}`;
+        const password = `Bc${generateRandomString()}${Math.floor(Math.random() * 9999)}!`;
+
+        this.log(`Creating game account - Login: ${login}`);
+
+        const gameAccount = new GameAccount({
+            userId,
+            gameId: game._id,
+            gameLogin: login,
+            gamePassword: password,
+            gameType: this.gameType,
+            status: 'pending',
+            metadata: { createdVia: 'api' }
+        });
+
+        await gameAccount.save();
+
+        try {
+            const result = await this.queueOperation(`createUser:${login}`, async () => {
+                // id omitted so createUser doesn't try to resolve a Tasks record
+                return await this.createUser({ id: null, login, password });
+            });
+
+            if (result === -1 || !result) {
+                gameAccount.status = 'failed';
+                await gameAccount.save();
+                throw new Error('Failed to create game account on server');
+            }
+
+            gameAccount.status = 'active';
+            gameAccount.gameLogin = login;
+            gameAccount.gamePassword = password;
+            await gameAccount.save();
+
+            return {
+                success: true,
+                data: {
+                    _id: gameAccount._id,
+                    gameLogin: login,
+                    gamePassword: password,
+                    gameType: gameAccount.gameType,
+                    status: gameAccount.status
+                },
+                message: 'Game account created successfully'
+            };
+        } catch (error) {
+            gameAccount.status = 'failed';
+            if (!gameAccount.metadata) gameAccount.metadata = {};
+            gameAccount.metadata.notes = error.message;
+            await gameAccount.save();
+            this.error(`Error creating game account: ${error.message}`);
+            throw error;
+        }
+    }
+
+    // Alternate creation entry point (kept for backwards compatibility).
     async createUserAccount(userId, gameLogin, password) {
         return await this.queueOperation(`createUser:${gameLogin}`, async () => {
             const gameAccount = await GameAccount.findOne({ userId, gameLogin, gameType: this.gameType });
-            const taskId = gameAccount ? gameAccount._id.toString() : `task_${Date.now()}`;
+            const taskId = gameAccount ? gameAccount._id.toString() : null;
 
             const result = await this.createUser({ id: taskId, login: gameLogin, password });
             if (result === -1) return -1;
@@ -1027,13 +1136,54 @@ class Juwa2Controller {
         });
     }
 
+    async getGameBalance(userId, gameLogin) {
+        try {
+            const gameAccount = await GameAccount.findOne({
+                userId,
+                gameLogin,
+                gameType: this.gameType
+            }).sort({ createdAt: -1 });
+
+            if (!gameAccount) {
+                throw new Error('Game account not found');
+            }
+
+            const user = await this.queueOperation(`getBalance:${gameLogin}`, async () => {
+                return await this.getUser(gameLogin);
+            });
+
+            if (!user || user === -1) {
+                return {
+                    success: false,
+                    data: null,
+                    message: 'Failed to retrieve balance from game server'
+                };
+            }
+
+            await gameAccount.updateBalance(user.balance);
+
+            return {
+                success: true,
+                data: {
+                    gameLogin,
+                    balance: user.balance,
+                    lastCheck: new Date(),
+                    accountId: gameAccount._id
+                }
+            };
+        } catch (error) {
+            this.error(`Error getting balance: ${error.message}`);
+            return { success: false, data: null, message: error.message };
+        }
+    }
+
     async rechargeAccount(userId, gameLogin, totalAmount, baseAmount, remark = 'API Recharge') {
         return await this.queueOperation(`recharge:${gameLogin}:${totalAmount}`, async () => {
             const gameAccount = await GameAccount.findOne({ userId, gameLogin, gameType: this.gameType });
             if (!gameAccount) throw new Error('Game account not found');
 
             const transactionId = `task_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-            const task = { id: transactionId, login: gameLogin, amount: totalAmount, remark, is_manual: false };
+            const task = { id: null, login: gameLogin, amount: totalAmount, remark, is_manual: false };
 
             const result = await this.recharge(task);
             if (result === -1) return -1;
@@ -1079,7 +1229,7 @@ class Juwa2Controller {
             const gameAccount = await GameAccount.findOne({ userId, gameLogin, gameType: this.gameType });
             if (!gameAccount) return { success: false, message: 'Game account not found' };
 
-            const task = { id: gameAccount._id.toString(), login: gameLogin, password: newPassword };
+            const task = { id: null, login: gameLogin, password: newPassword };
 
             const result = await this.resetPassword(task);
             if (result === -1) return -1;
