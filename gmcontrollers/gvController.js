@@ -886,11 +886,33 @@ class GameVaultController {
     // ========================================
 
     async getSessionData() {
+        const sessionPath = path.join(__dirname, 'sessiongv.json');
+
+        // ⭐ No session file yet — login and create one
+        if (!existsSync(sessionPath)) {
+            this.log('No session file found — logging in to create one...');
+
+            // Wait for any in-flight init/auth to finish
+            if (this.initializationPromise) await this.initializationPromise;
+            if (this.authorizationPromise) await this.authorizationPromise;
+
+            // If still nothing and not currently authorizing, kick off authorize
+            if (!existsSync(sessionPath) && !this.isAuthorizing) {
+                await this.authorize();
+            }
+
+            // Give the session file a moment to be written
+            await new Promise(resolve => setTimeout(resolve, 1500));
+
+            if (!existsSync(sessionPath)) {
+                this.error('Session file still not found after login attempt');
+                return null;
+            }
+        }
+
         try {
-            const sessionPath = path.join(__dirname, 'sessiongv.json');
             const buffer = readFileSync(sessionPath);
-            const json = buffer.toString();
-            const session_data = JSON.parse(json);
+            const session_data = JSON.parse(buffer.toString());
             const session_user_data = JSON.parse(session_data.user);
             return { session_data, session_user_data };
         } catch (error) {
