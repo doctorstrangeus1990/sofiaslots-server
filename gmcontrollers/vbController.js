@@ -1,4 +1,4 @@
-// controllers/VBlinkController.js - COMPLETE FILE
+// controllers/VBlinkController.js - COMPLETE FILE (API-based, no Puppeteer)
 const axios = require('axios');
 const crypto = require('crypto');
 const Logger = require('../utils/logger.js');
@@ -11,7 +11,7 @@ class VBlinkController {
         this.logger = Logger('VBlink');
         this.gameType = 'vblink';
         this.initialized = false;
-        
+
         // API Configuration - Will be loaded from DB
         this.apiConfig = {
             serverDomain: 'https://www.vblink777.club', // Update with actual domain
@@ -20,12 +20,12 @@ class VBlinkController {
             agentAccount: null,
             agentPassword: null
         };
-        
+
         // Session management
         this.lastSuccessfulOperation = Date.now();
         this.consecutiveErrors = 0;
         this.maxConsecutiveErrors = 3;
-        
+
         // Cache for admin balance
         this.cache = {
             adminBalance: null,
@@ -33,65 +33,95 @@ class VBlinkController {
             cacheDuration: 30 * 1000 // 30 seconds
         };
 
-        // Auto-initialize
-        this.loadAgentCredentials()
-    .then(() => this.initialize())
-    .catch(err => {
-        this.error(`Failed to initialize on startup: ${err.message}`);
-        this.scheduleRetryInitialize();
-    });
-
-        // Start queue processing
-        this.checkQueue();
+        // Auto-initialize (API mode - just load config, no browser)
+        this.initialize()
+            .then(() => this.checkQueue())
+            .catch(err => {
+                this.error(`Failed to initialize on startup: ${err.message}`);
+                this.scheduleRetryInitialize();
+            });
     }
 
     log(msg) { this.logger.log(msg); }
     error(msg) { this.logger.error(msg); }
 
     // ========================================
-    // CREDENTIAL MANAGEMENT
+    // INITIALIZATION (API MODE - NO BROWSER)
     // ========================================
 
-    async loadCredentials() {
+    async initialize() {
         try {
-            const game = await Game.findOne({ 
-                shortcode: 'VB',
-                status: { $in: ['active', 'maintenance'] } 
-            });
-
-            if (!game) {
-                throw new Error('VBlink game not found in database');
-            }
-
-            if (!game.agentUsername || !game.agentPassword) {
-                throw new Error('Agent credentials not configured for VBlink');
-            }
-
-            // Load API credentials from game config
-            this.apiConfig.agentAccount = game.agentUsername;
-            this.apiConfig.agentPassword = game.agentPassword;
-            
-            // These should be stored in game.metadata or similar
-            if (game.metadata && game.metadata.appid && game.metadata.appsecret) {
-                this.apiConfig.appid = game.metadata.appid;
-                this.apiConfig.appsecret = game.metadata.appsecret;
-            } else {
-                // HARDCODED FALLBACK - Replace with actual values
-                this.apiConfig.appid = 'mf0IChecUllYmr13x107';
-                this.apiConfig.appsecret = 'k00CFbXeNVcQkfihkjHifuonxx4d4';
-                this.log('⚠️ Using hardcoded API credentials - update game.metadata in DB');
-            }
-
-            if (game.metadata && game.metadata.apiDomain) {
-                this.apiConfig.serverDomain = game.metadata.apiDomain;
-            }
-
-            this.log(`Loaded credentials for agent: ${game.agentUsername}`);
+            await this.loadApiConfig();
+            this.initialized = true;
+            this.lastSuccessfulOperation = Date.now();
+            this.log('VBlink controller initialized (API mode)');
             return true;
         } catch (error) {
-            this.error(`Failed to load credentials: ${error.message}`);
+            this.initialized = false;
+            this.error(`Initialization failed: ${error.message}`);
             throw error;
         }
+    }
+
+    scheduleRetryInitialize() {
+        this.log('🔄 Scheduling retry initialization in 30 seconds...');
+        setTimeout(async () => {
+            try {
+                if (!this.initialized) {
+                    this.log('🔄 Retrying initialization...');
+                    await this.initialize();
+                    this.checkQueue();
+                    this.log('✅ Retry initialization successful');
+                }
+            } catch (err) {
+                this.error(`Retry failed: ${err.message}`);
+                this.scheduleRetryInitialize();
+            }
+        }, 30000);
+    }
+
+    // ========================================
+    // API CONFIG LOADING (appid / appsecret)
+    // ========================================
+
+    async loadApiConfig() {
+        const game = await Game.findOne({
+            shortcode: 'VB',
+            status: { $in: ['active', 'maintenance'] }
+        });
+
+        if (!game) {
+            throw new Error('VBlink game not found in database');
+        }
+
+        // appid + appsecret are the actual API auth (not agent user/pass)
+        if (game.metadata && game.metadata.appid && game.metadata.appsecret) {
+            this.apiConfig.appid = game.metadata.appid;
+            this.apiConfig.appsecret = game.metadata.appsecret;
+        } else if (process.env.VB_APPID && process.env.VB_APPSECRET) {
+            this.apiConfig.appid = process.env.VB_APPID;
+            this.apiConfig.appsecret = process.env.VB_APPSECRET;
+            this.log('Loaded API credentials from environment variables');
+        } else {
+            throw new Error('VBlink API credentials (appid/appsecret) not configured in game.metadata or env');
+        }
+
+        // Optional agent account (only used by endpoints that need it; not required for signing)
+        if (game.agentUsername) this.apiConfig.agentAccount = game.agentUsername;
+        if (game.agentPassword) this.apiConfig.agentPassword = game.agentPassword;
+
+        // Optional domain override
+        if (game.metadata && game.metadata.apiDomain) {
+            this.apiConfig.serverDomain = game.metadata.apiDomain;
+        }
+
+        this.log(`Loaded API config for appid: ${this.apiConfig.appid}`);
+        return true;
+    }
+
+    // Backwards-compat alias (factory / other code may still call this name)
+    async loadAgentCredentials() {
+        return this.loadApiConfig();
     }
 
     // ========================================
@@ -114,18 +144,18 @@ class VBlinkController {
 
         // Sort parameters alphabetically
         const sortedKeys = Object.keys(signParams).sort();
-        
+
         // Create key=value pairs
         const paramString = sortedKeys
             .map(key => `${key}=${signParams[key]}`)
             .join('&');
-        
+
         // Append appsecret
         const stringToSign = paramString + this.apiConfig.appsecret;
-        
+
         // Generate MD5 hash
         const signature = crypto.createHash('md5').update(stringToSign).digest('hex');
-        
+
         this.log(`Signature generated for params: ${Object.keys(signParams).join(', ')}`);
         return signature;
     }
@@ -148,7 +178,7 @@ class VBlinkController {
             requestParams.sign = sign;
 
             const url = `${this.apiConfig.serverDomain}${endpoint}`;
-            
+
             this.log(`Making API request to ${endpoint}`);
 
             const response = await axios({
@@ -182,19 +212,19 @@ class VBlinkController {
     }
 
     generateRequestId() {
-    // ✅ Generate alphanumeric only (no underscores or special chars)
-    const timestamp = Date.now().toString();
-    const randomStr = Math.random().toString(36).substr(2, 9); // Only letters/numbers
-    
-    // Combine without underscore
-    const requestId = `req${timestamp}${randomStr}`;
-    
-    // Ensure it's under 64 characters (should be ~28 chars)
-    return requestId.substring(0, 64);
-}
+        // ✅ Generate alphanumeric only (no underscores or special chars)
+        const timestamp = Date.now().toString();
+        const randomStr = Math.random().toString(36).substr(2, 9); // Only letters/numbers
+
+        // Combine without underscore
+        const requestId = `req${timestamp}${randomStr}`;
+
+        // Ensure it's under 64 characters (should be ~28 chars)
+        return requestId.substring(0, 64);
+    }
 
     // ========================================
-    // AGENT LOGIN (Get appsecret if encrypted)
+    // AGENT LOGIN (Get balance / appsecret if encrypted)
     // ========================================
 
     async agentLogin() {
@@ -210,7 +240,7 @@ class VBlinkController {
 
             if (result.code === 200) {
                 this.log('✅ Agent login successful');
-                
+
                 // If appsecret is encrypted, decrypt it
                 if (result.data?.appsecret_encrypted) {
                     this.apiConfig.appsecret = this.aesDecrypt(
@@ -240,23 +270,23 @@ class VBlinkController {
         try {
             // Decode base64
             const data = Buffer.from(encryptedData, 'base64');
-            
+
             // Extract IV (first 16 bytes)
             const iv = data.slice(0, 16);
-            
+
             // Extract encrypted data (remaining bytes)
             const encrypted = data.slice(16);
-            
+
             // Generate key from password (lowercase, double MD5)
             const passwordLower = password.toLowerCase();
             const hash1 = crypto.createHash('md5').update(passwordLower).digest('hex');
             const key = crypto.createHash('md5').update(hash1).digest('hex');
-            
+
             // Decrypt using AES-256-CBC
             const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(key), iv);
             let decrypted = decipher.update(encrypted);
             decrypted = Buffer.concat([decrypted, decipher.final()]);
-            
+
             return decrypted.toString();
         } catch (error) {
             this.error(`AES decryption failed: ${error.message}`);
@@ -269,126 +299,126 @@ class VBlinkController {
     // ========================================
 
     async createPlayer(login, password) {
-    try {
-        this.log(`Creating player: ${login}`);
+        try {
+            this.log(`Creating player: ${login}`);
 
-        const params = {
-            requestid: this.generateRequestId(),
-            account: login,
-            passwd: password
-        };
-
-        const result = await this.makeApiRequest('/fast/user/create', params);
-
-        // ✅ DEBUG: Log the entire response
-        this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        this.log('🔍 CREATE PLAYER API RESPONSE:');
-        this.log(JSON.stringify(result, null, 2));
-        this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-        if (result.code === 200 || result.code === 1) {
-            // ✅ DEBUG: Check what's in result.data
-            this.log('✅ Success! Checking result.data:');
-            this.log(`   result.data = ${JSON.stringify(result.data)}`);
-            this.log(`   result.data?.full_account = ${result.data?.full_account}`);
-            
-            // ✅ Try different possible field names
-            const fullAccount = result.data?.full_account 
-                             || result.data?.fullAccount 
-                             || result.data?.full_name
-                             || result.data?.account
-                             || login; // Fallback to login
-            
-            this.log(`   Using fullAccount: ${fullAccount}`);
-            
-            return {
-                success: true,
-                fullAccount: fullAccount,
-                login: login,
-                message: result.code === 1 ? 'New user created' : 'Success'
+            const params = {
+                requestid: this.generateRequestId(),
+                account: login,
+                passwd: password
             };
-        } else if (result.code === 12) {
-            this.log(`Player already exists: ${login}`);
-            return { success: false, message: 'User already exists', code: 12 };
-        } else {
-            this.error(`Create player failed: ${result.message || `Code ${result.code}`}`);
-            return { success: false, message: result.message, code: result.code };
-        }
 
-    } catch (error) {
-        this.error(`Create player error: ${error.message}`);
-        return { success: false, message: error.message };
+            const result = await this.makeApiRequest('/fast/user/create', params);
+
+            // ✅ DEBUG: Log the entire response
+            this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            this.log('🔍 CREATE PLAYER API RESPONSE:');
+            this.log(JSON.stringify(result, null, 2));
+            this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+            if (result.code === 200 || result.code === 1) {
+                // ✅ DEBUG: Check what's in result.data
+                this.log('✅ Success! Checking result.data:');
+                this.log(`   result.data = ${JSON.stringify(result.data)}`);
+                this.log(`   result.data?.full_account = ${result.data?.full_account}`);
+
+                // ✅ Try different possible field names
+                const fullAccount = result.data?.full_account
+                    || result.data?.fullAccount
+                    || result.data?.full_name
+                    || result.data?.account
+                    || login; // Fallback to login
+
+                this.log(`   Using fullAccount: ${fullAccount}`);
+
+                return {
+                    success: true,
+                    fullAccount: fullAccount,
+                    login: login,
+                    message: result.code === 1 ? 'New user created' : 'Success'
+                };
+            } else if (result.code === 12) {
+                this.log(`Player already exists: ${login}`);
+                return { success: false, message: 'User already exists', code: 12 };
+            } else {
+                this.error(`Create player failed: ${result.message || `Code ${result.code}`}`);
+                return { success: false, message: result.message, code: result.code };
+            }
+
+        } catch (error) {
+            this.error(`Create player error: ${error.message}`);
+            return { success: false, message: error.message };
+        }
     }
-}
 
     async depositToPlayer(login, amount) {
-    try {
-        this.log(`Depositing ${amount} to ${login}`);
+        try {
+            this.log(`Depositing ${amount} to ${login}`);
 
-        // ✅ Get account from DB
-        const gameAccount = await GameAccount.findOne({ gameLogin: login });
-        
-        let accountToUse = login;
-        
-        // Try to use full_account if available
-        if (gameAccount && gameAccount.metadata && gameAccount.metadata.fullAccount) {
-            accountToUse = gameAccount.metadata.fullAccount;
-            this.log(`Found full_account in metadata: ${accountToUse}`);
-        } else {
-            this.log(`No full_account found, using login: ${accountToUse}`);
-        }
+            // ✅ Get account from DB
+            const gameAccount = await GameAccount.findOne({ gameLogin: login });
 
-        const params = {
-            requestid: this.generateRequestId(),
-            account: accountToUse,
-            amount: amount.toFixed(2)
-        };
+            let accountToUse = login;
 
-        // ✅ DEBUG: Log request params
-        this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        this.log('🔍 DEPOSIT REQUEST PARAMS:');
-        this.log(JSON.stringify(params, null, 2));
-        this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            // Try to use full_account if available
+            if (gameAccount && gameAccount.metadata && gameAccount.metadata.fullAccount) {
+                accountToUse = gameAccount.metadata.fullAccount;
+                this.log(`Found full_account in metadata: ${accountToUse}`);
+            } else {
+                this.log(`No full_account found, using login: ${accountToUse}`);
+            }
 
-        const result = await this.makeApiRequest('/fast/user/deposit', params);
-
-        // ✅ DEBUG: Log full response
-        this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        this.log('🔍 DEPOSIT API RESPONSE:');
-        this.log(JSON.stringify(result, null, 2));
-        this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-        if (result.code === 200) {
-            this.log(`✅ Deposit successful. New balance: ${result.data?.balance}`);
-            return {
-                success: true,
-                balance: result.data?.balance,
-                orderNum: result.data?.order_num,
-                requestid: result.data?.requestid,
-                timestamp: result.data?.time
+            const params = {
+                requestid: this.generateRequestId(),
+                account: accountToUse,
+                amount: amount.toFixed(2)
             };
-        } else if (result.code === 3) {
-            // ✅ DEBUG: Parameter error - let's see what's wrong
-            this.error('❌ Parameter Error (Code 3)');
-            this.error(`   Account used: ${accountToUse}`);
-            this.error(`   Amount: ${amount.toFixed(2)}`);
-            this.error(`   Message: ${result.message || result.msg || 'No message'}`);
-            
-            return { 
-                success: false, 
-                message: `Parameter error - ${result.message || result.msg || 'Check account format'}`, 
-                code: 3 
-            };
-        } else {
-            this.error(`Deposit failed: ${result.message || `Code ${result.code}`}`);
-            return { success: false, message: result.message, code: result.code };
-        }
 
-    } catch (error) {
-        this.error(`Deposit error: ${error.message}`);
-        return { success: false, message: error.message };
+            // ✅ DEBUG: Log request params
+            this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            this.log('🔍 DEPOSIT REQUEST PARAMS:');
+            this.log(JSON.stringify(params, null, 2));
+            this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+            const result = await this.makeApiRequest('/fast/user/deposit', params);
+
+            // ✅ DEBUG: Log full response
+            this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            this.log('🔍 DEPOSIT API RESPONSE:');
+            this.log(JSON.stringify(result, null, 2));
+            this.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+            if (result.code === 200) {
+                this.log(`✅ Deposit successful. New balance: ${result.data?.balance}`);
+                return {
+                    success: true,
+                    balance: result.data?.balance,
+                    orderNum: result.data?.order_num,
+                    requestid: result.data?.requestid,
+                    timestamp: result.data?.time
+                };
+            } else if (result.code === 3) {
+                // ✅ DEBUG: Parameter error - let's see what's wrong
+                this.error('❌ Parameter Error (Code 3)');
+                this.error(`   Account used: ${accountToUse}`);
+                this.error(`   Amount: ${amount.toFixed(2)}`);
+                this.error(`   Message: ${result.message || result.msg || 'No message'}`);
+
+                return {
+                    success: false,
+                    message: `Parameter error - ${result.message || result.msg || 'Check account format'}`,
+                    code: 3
+                };
+            } else {
+                this.error(`Deposit failed: ${result.message || `Code ${result.code}`}`);
+                return { success: false, message: result.message, code: result.code };
+            }
+
+        } catch (error) {
+            this.error(`Deposit error: ${error.message}`);
+            return { success: false, message: error.message };
+        }
     }
-}
 
     async withdrawFromPlayer(login, amount) {
         try {
@@ -426,7 +456,7 @@ class VBlinkController {
     async getPlayerBalance(login, usePassword = false, password = null) {
         try {
             const endpoint = usePassword ? '/fast/user/balanceWithPasswd' : '/fast/user/balance';
-            
+
             const params = {
                 requestid: this.generateRequestId(),
                 account: login
@@ -553,7 +583,7 @@ class VBlinkController {
                 }
                 return result;
             };
-            
+
             const login = `bc${generateRandomString()}${generateRandomString()}`;
             const password = `Bc${generateRandomString()}${Math.floor(Math.random() * 9999)}!`;
 
@@ -578,12 +608,12 @@ class VBlinkController {
                 gameAccount.status = 'active';
                 gameAccount.gameLogin = login;
                 gameAccount.gamePassword = password;
-                
+
                 if (!gameAccount.metadata) {
                     gameAccount.metadata = {};
                 }
                 gameAccount.metadata.fullAccount = result.fullAccount;
-                
+
                 await gameAccount.save();
 
                 return {
@@ -662,7 +692,7 @@ class VBlinkController {
     async rechargeAccount(userId, gameLogin, totalAmount, baseAmount, remark = 'API Recharge') {
         try {
             this.log(`Recharge - Base: ${baseAmount}, Total (with bonus): ${totalAmount}`);
-            
+
             const gameAccount = await GameAccount.findOne({
                 userId,
                 gameLogin
@@ -676,15 +706,15 @@ class VBlinkController {
 
             if (result.success) {
                 const updatedGameAccount = await GameAccount.findById(gameAccount._id);
-                
+
                 this.log(`✅ Recharge successful`);
                 this.log(`   - User paid: ${baseAmount}`);
                 this.log(`   - Bonus: ${totalAmount - baseAmount}`);
                 this.log(`   - Total recharged: ${totalAmount}`);
                 this.log(`   - New balance: ${result.balance}`);
-                
+
                 await updatedGameAccount.updateBalance(result.balance);
-                
+
                 return {
                     success: true,
                     data: {
@@ -709,7 +739,7 @@ class VBlinkController {
     async redeemFromAccount(userId, gameLogin, totalAmount, cashoutAmount, remark = 'API Redeem') {
         try {
             this.log(`Redeem - Amount: ${totalAmount}, Cashout: ${cashoutAmount}`);
-            
+
             const gameAccount = await GameAccount.findOne({
                 userId,
                 gameLogin
@@ -728,7 +758,7 @@ class VBlinkController {
             if (result.success) {
                 const updatedGameAccount = await GameAccount.findById(gameAccount._id);
                 await updatedGameAccount.updateBalance(result.balance);
-                
+
                 return {
                     success: true,
                     data: {
@@ -763,11 +793,11 @@ class VBlinkController {
 
             const oldPassword = gameAccount.gamePassword;
             const result = await this.changePlayerPassword(gameLogin, oldPassword, newPassword);
-            
+
             if (result.success) {
                 gameAccount.gamePassword = newPassword;
                 await gameAccount.save();
-                
+
                 return {
                     success: true,
                     message: 'Password reset successfully'
@@ -791,14 +821,14 @@ class VBlinkController {
     async getDownloadCodeForUser(userId, gameLogin) {
         try {
             this.log(`Getting download code for ${gameLogin}`);
-            
+
             // VBlink doesn't support download codes via API
             return {
                 success: false,
                 message: 'Download codes are not supported for VBlink',
                 data: null
             };
-            
+
         } catch (error) {
             this.error(`Error getting download code: ${error.message}`);
             return {
@@ -813,21 +843,21 @@ class VBlinkController {
     // ========================================
 
     async getAdminBalance() {
-        if (this.cache.adminBalance !== null && 
-            this.cache.adminBalanceTimestamp && 
+        if (this.cache.adminBalance !== null &&
+            this.cache.adminBalanceTimestamp &&
             Date.now() - this.cache.adminBalanceTimestamp < this.cache.cacheDuration) {
             this.log(`Returning cached admin balance: ${this.cache.adminBalance}`);
             return this.cache.adminBalance;
         }
-        
+
         const loginResult = await this.agentLogin();
-        
+
         if (loginResult.success && loginResult.balance !== undefined) {
             this.cache.adminBalance = loginResult.balance;
             this.cache.adminBalanceTimestamp = Date.now();
             return loginResult.balance;
         }
-        
+
         return false;
     }
 
@@ -841,7 +871,7 @@ class VBlinkController {
 
             if (result.success) {
                 this.log(`✅ Account created: ${task.login}`);
-                
+
                 try {
                     const gameAccount = await GameAccount.findById(task.id);
                     if (gameAccount) {
@@ -875,7 +905,7 @@ class VBlinkController {
         try {
             // Check balance first to prevent recharge if already high
             const balanceResult = await this.getPlayerBalance(task.login);
-            
+
             if (balanceResult.success && balanceResult.balance >= 2) {
                 this.log(`Balance too high: ${balanceResult.balance}`);
                 await Tasks.error(task.id, `balance is more than $2 (${balanceResult.balance})`);
@@ -886,7 +916,7 @@ class VBlinkController {
 
             if (result.success) {
                 this.log(`✅ Deposit successful. New balance: ${result.balance}`);
-                
+
                 try {
                     const gameAccount = await GameAccount.findOne({ gameLogin: task.login });
                     if (gameAccount) {
@@ -915,7 +945,7 @@ class VBlinkController {
     async processRedeemTask(task) {
         try {
             const balanceResult = await this.getPlayerBalance(task.login);
-            
+
             if (!balanceResult.success) {
                 await Tasks.error(task.id, balanceResult.message);
                 return false;
@@ -937,7 +967,7 @@ class VBlinkController {
 
             if (result.success) {
                 this.log(`✅ Withdrawal successful. New balance: ${result.balance}`);
-                
+
                 try {
                     const gameAccount = await GameAccount.findOne({ gameLogin: task.login });
                     if (gameAccount) {
@@ -966,24 +996,24 @@ class VBlinkController {
     async processResetPasswordTask(task) {
         try {
             const gameAccount = await GameAccount.findOne({ gameLogin: task.login });
-            
+
             if (!gameAccount) {
                 await Tasks.error(task.id, 'Account not found');
                 return false;
             }
 
             const result = await this.changePlayerPassword(
-                task.login, 
-                gameAccount.gamePassword, 
+                task.login,
+                gameAccount.gamePassword,
                 task.password
             );
 
             if (result.success) {
                 this.log(`✅ Password reset successful for ${task.login}`);
-                
+
                 gameAccount.gamePassword = task.password;
                 await gameAccount.save();
-                
+
                 await Tasks.approve(task.id, task.password);
                 return true;
             } else {
@@ -1002,7 +1032,7 @@ class VBlinkController {
     async processGetBalanceTask(task) {
         try {
             const balance = await this.getAdminBalance();
-            
+
             if (balance !== false && balance !== null && !isNaN(balance)) {
                 this.log(`Admin balance: ${balance}`);
                 await Tasks.approve(task.id, balance);
@@ -1102,10 +1132,10 @@ class VBlinkController {
         this.cache.adminBalance = null;
         this.cache.adminBalanceTimestamp = null;
         this.consecutiveErrors = 0;
-        
-        // Re-login to refresh credentials
-        await this.agentLogin();
-        
+
+        // Reload API config from DB
+        await this.loadApiConfig();
+
         this.log('Reload complete');
         return true;
     }
