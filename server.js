@@ -73,8 +73,7 @@ const allowedOrigins = [
   'http://localhost:8080',
   'https://frontend-belucky.ngrok-free.dev',
   'https://your-production-domain.com',
-  'https://sofiaslots-admin-frontend.onrender.com',
-  'https://sofiaslots-frontend-user.onrender.com',
+  'https://admin.sofiaslots.com',
   'https://sofiaslots.com',
   'https://www.sofiaslots.com',
 ];
