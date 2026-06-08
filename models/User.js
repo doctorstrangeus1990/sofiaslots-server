@@ -42,13 +42,15 @@ const userSchema = new mongoose.Schema({
       default: null
     },
     email: {
-      type: String,
-      required: [true, 'Email is required'],
-      unique: true,
-      lowercase: true,
-      trim: true,
-      match: [/^\S+@\S+\.\S+$/, 'Please enter a valid email address']
-    },
+  type: String,
+  required: false,
+  unique: true,
+  sparse: true,        // allows multiple docs with no email
+  default: undefined,  // ensures the field is truly absent, not null
+  lowercase: true,
+  trim: true,
+  match: [/^\S+@\S+\.\S+$/, 'Please enter a valid email address']
+},
     emailVerified: {
       type: Boolean,
       default: false
