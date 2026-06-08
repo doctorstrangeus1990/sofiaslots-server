@@ -288,32 +288,34 @@ const resetPassword = async (req, res) => {
 // ========================================
 // REGISTER WITH IP DUPLICATE DETECTION
 // ========================================
+// ========================================
+// REGISTER WITH IP DUPLICATE DETECTION
+// ========================================
 const register = async (req, res) => {
   const role = 2;
-  const { username, password, email, affiliateUsername } = req.body;
+  const { username, password, affiliateUsername } = req.body;
 
-  if (!username || !password || !email) {
-    return res.status(400).json({ 
+  if (!username || !password) {
+    return res.status(400).json({
       success: false,
-      message: 'Username, password, and email are required' 
+      message: 'Username and password are required'
     });
   }
 
   if (username.length < 3 || username.length > 20) {
-    return res.status(400).json({ 
+    return res.status(400).json({
       success: false,
-      message: 'Username must be between 3 and 20 characters' 
+      message: 'Username must be between 3 and 20 characters'
     });
   }
 
   if (password.length < 6) {
-    return res.status(400).json({ 
+    return res.status(400).json({
       success: false,
-      message: 'Password must be at least 6 characters' 
+      message: 'Password must be at least 6 characters'
     });
   }
 
-  const lowercaseEmail = email.toLowerCase().trim();
   const clientIP = getClientIP(req);
 
   console.log(`📍 Registration from IP: ${clientIP}, User-Agent: ${req.get('User-Agent')}`);
@@ -322,11 +324,10 @@ const register = async (req, res) => {
     // ========================================
     // ✅ CHECK FOR MULTIPLE ACCOUNTS FROM SAME IP
     // ========================================
-    // Skip localhost/development IPs from this check
     const isLocalhost = clientIP === '127.0.0.1' || clientIP === 'localhost' || clientIP === '::1';
-    
+
     let existingAccountsFromIP = 0;
-    
+
     if (!isLocalhost) {
       existingAccountsFromIP = await User.countDocuments({
         'account.signupIP': clientIP
@@ -339,46 +340,20 @@ const register = async (req, res) => {
           message: 'You have multiple accounts from the same device. Please contact support if you believe this is an error.'
         });
       }
-      
+
       console.log(`✅ IP check passed - ${existingAccountsFromIP} existing account(s) from IP: ${clientIP}`);
     } else {
       console.log(`ℹ️  Localhost detected - skipping IP duplicate check`);
     }
 
-    const verifiedOTP = await OTP.findOne({
-      email: lowercaseEmail,
-      purpose: 'registration',
-      verified: true
-    }).sort({ createdAt: -1 });
-
-    if (!verifiedOTP) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email not verified. Please verify your email first.'
-      });
-    }
-
-    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-    if (verifiedOTP.createdAt < thirtyMinutesAgo) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email verification expired. Please verify again.'
-      });
-    }
-
+    // ========================================
+    // USERNAME UNIQUENESS
+    // ========================================
     const existingUsername = await User.findOne({ username: username.toLowerCase() });
     if (existingUsername) {
-      return res.status(409).json({ 
+      return res.status(409).json({
         success: false,
-        message: 'Username already exists' 
-      });
-    }
-
-    const existingEmail = await User.findOne({ 'profile.email': lowercaseEmail });
-    if (existingEmail) {
-      return res.status(409).json({ 
-        success: false,
-        message: 'Email already registered' 
+        message: 'Username already exists'
       });
     }
 
@@ -389,8 +364,7 @@ const register = async (req, res) => {
       password: hashedPassword,
       role,
       profile: {
-        email: lowercaseEmail,
-        emailVerified: true
+        emailVerified: false
       },
       account: {
         signupIP: clientIP,
@@ -408,156 +382,85 @@ const register = async (req, res) => {
 
     console.log(`✅ User registered: ${username} from IP: ${clientIP} (Total accounts from this IP: ${existingAccountsFromIP + 1})`);
 
-    // Add user to Mailtrap contact list for future bulk campaigns
-    await emailService.addToMailtrapContactList(lowercaseEmail, username);
+    // ⚠️ Mailtrap removed — no email collected at signup.
+    // (Original line: await emailService.addToMailtrapContactList(lowercaseEmail, username);)
 
-    // Award signup bonus
+    // ========================================
+    // AWARD SIGNUP BONUS
+    // ========================================
     let signupBonusAmount = 0;
     try {
       const settings = await Settings.getSettings();
       if (settings.signupBonus.enabled) {
-        signupBonusAmount = settings.signupBonus.amount || 0;
-      }
-    } catch (settingsError) {
-      console.error('Error fetching signup bonus settings:', settingsError);
-      signupBonusAmount = 3;
-    }
+        signupBonusAmount = settings.signupBonus.amount;
 
-    if (signupBonusAmount > 0) {
-      try {
-        const newUserWallet = await Wallet.findOrCreateWallet(newUser._id);
-        newUserWallet.addTransaction({
-          type: 'bonus',
-          amount: signupBonusAmount,
-          description: 'Welcome signup bonus',
-          status: 'completed',
-          isBonus: true,
-          metadata: {
-            source: 'signup_bonus',
-            rewardType: 'welcome_bonus',
-            signupIP: clientIP
-          }
+        await Wallet.create({
+          userId: newUser._id,
+          balance: signupBonusAmount,
+          currency: settings.currency || 'USD'
         });
-        await newUserWallet.save();
-        console.log(`✅ $${signupBonusAmount} signup bonus awarded to new user`);
-      } catch (signupBonusError) {
-        console.error('Error awarding signup bonus:', signupBonusError);
+      } else {
+        await Wallet.create({
+          userId: newUser._id,
+          balance: 0,
+          currency: settings.currency || 'USD'
+        });
       }
+    } catch (bonusError) {
+      console.error('Error awarding signup bonus / creating wallet:', bonusError);
     }
 
-    // Process referral code
-    let referralApplied = false;
-    let referralCode = affiliateUsername || verifiedOTP.metadata?.referralCode;
-    
-    if (referralCode) {
-      console.log(`\n🔗 Processing referral code: ${referralCode}`);
-      
+    // ========================================
+    // HANDLE REFERRAL
+    // ========================================
+    if (affiliateUsername) {
       try {
-        const referralTemplate = await Referral.findOne({
-          referralCode: referralCode.toUpperCase(),
-          referredUserId: null
-        }).populate('referrerId', 'username');
-
-        if (!referralTemplate) {
-          console.log('   ❌ Invalid referral code provided');
-        } else if (referralTemplate.referrerId._id.toString() === newUser._id.toString()) {
-          console.log('   ❌ User tried to refer themselves');
-        } else {
-          const alreadyReferred = await Referral.findOne({
-            referredUserId: newUser._id
+        const affiliate = await User.findOne({ username: affiliateUsername.toLowerCase() });
+        if (affiliate) {
+          await Referral.create({
+            referrer: affiliate._id,
+            referred: newUser._id,
+            referredUsername: newUser.username,
+            createdAt: new Date()
           });
-
-          if (alreadyReferred) {
-            console.log('   ⚠️  User already has a referral applied');
-          } else {
-            await User.findByIdAndUpdate(newUser._id, {
-              affiliateId: referralTemplate.referrerId._id
-            });
-
-            const newReferral = await Referral.create({
-              referrerId: referralTemplate.referrerId._id,
-              referredUserId: newUser._id,
-              referralCode: referralCode.toUpperCase(),
-              status: 'pending',
-              rewards: {
-                referrerReward: 0,
-                referredReward: 0,
-                rewardType: 'percentage'
-              },
-              conditions: {
-                minDeposit: 10,
-                minGamesPlayed: 0,
-                maxRewardDeposits: 5,
-                lifetimeRewardRate: 5
-              },
-              metadata: {
-                referredUserIP: clientIP,
-                referredUserAgent: req.get('User-Agent'),
-                referralSource: 'registration',
-                depositCount: 0,
-                totalReferralEarnings: 0,
-                highRewardEarnings: 0,
-                lifetimeEarnings: 0
-              }
-            });
-
-            referralApplied = true;
-            
-            console.log('   ✅ Referral applied successfully!');
-            console.log(`      Referrer: ${referralTemplate.referrerId.username} (${referralTemplate.referrerId._id})`);
-            console.log(`      Referred: ${newUser.username} (${newUser._id})`);
-            console.log(`      Referral ID: ${newReferral._id}`);
-            console.log(`      Rewards: 10% on first 5 deposits, then 5% lifetime`);
-          }
+          console.log(`✅ Referral recorded: ${affiliateUsername} → ${username}`);
+        } else {
+          console.log(`ℹ️  Referral code "${affiliateUsername}" did not match any user`);
         }
-      } catch (referralError) {
-        console.error('   ❌ Error processing referral:', referralError);
+      } catch (refError) {
+        console.error('Error recording referral:', refError);
       }
-    } else {
-      console.log('ℹ️  No referral code provided during registration');
     }
 
-    // Delete the OTP record after successful registration
-    await OTP.findByIdAndDelete(verifiedOTP._id);
+    // ========================================
+    // ISSUE JWT
+    // ========================================
+    const token = jwt.sign(
+      { id: newUser._id, username: newUser.username, role: newUser.role },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRY || '7d' }
+    );
 
-    const userResponse = {
-      _id: newUser._id,
-      username: newUser.username,
-      role: newUser.role,
-      affiliateId: newUser.affiliateId || null,
-      profile: {
-        email: lowercaseEmail,
-        emailVerified: true
-      }
-    };
-
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: referralApplied ? 
-        `Account created successfully with referral code ${referralCode}! $${signupBonusAmount} signup bonus added.` : 
-        `Account created successfully! $${signupBonusAmount} signup bonus added.`,
+      message: 'Account created successfully',
       data: {
-        user: userResponse,
-        referralApplied,
-        signupBonus: signupBonusAmount
+        token,
+        user: {
+          id: newUser._id,
+          username: newUser.username,
+          role: newUser.role,
+          balance: signupBonusAmount
+        }
       }
     });
 
   } catch (error) {
-    console.error('Error creating user:', error);
-    
-    if (error.code === 11000) {
-      const field = Object.keys(error.keyPattern)[0];
-      return res.status(409).json({
-        success: false,
-        message: field === 'username' ? 'Username already exists' : 'Email already registered',
-      });
-    }
-
-    res.status(500).json({
+    console.error('Error registering user:', error);
+    return res.status(500).json({
       success: false,
-      message: 'Error creating user',
-      error: error.message,
+      message: 'Error registering user',
+      error: error.message
     });
   }
 };
