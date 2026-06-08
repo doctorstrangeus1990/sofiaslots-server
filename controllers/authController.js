@@ -286,10 +286,8 @@ const resetPassword = async (req, res) => {
 // REGISTER WITH IP DUPLICATE DETECTION
 // ========================================
 // ========================================
-// REGISTER WITH IP DUPLICATE DETECTION
 // ========================================
-// ========================================
-// REGISTER WITH IP DUPLICATE DETECTION
+// REGISTER (no email) WITH IP DUPLICATE DETECTION
 // ========================================
 const register = async (req, res) => {
   const role = 2;
@@ -365,6 +363,7 @@ const register = async (req, res) => {
       role,
       profile: {
         emailVerified: false
+        // no email — field stays absent (works with sparse unique index)
       },
       account: {
         signupIP: clientIP,
@@ -383,52 +382,74 @@ const register = async (req, res) => {
     console.log(`✅ User registered: ${username} from IP: ${clientIP} (Total accounts from this IP: ${existingAccountsFromIP + 1})`);
 
     // ⚠️ Mailtrap removed — no email collected at signup.
-    // (Original line: await emailService.addToMailtrapContactList(lowercaseEmail, username);)
 
     // ========================================
-    // AWARD SIGNUP BONUS
+    // AWARD SIGNUP BONUS → BONUS BALANCE
     // ========================================
     let signupBonusAmount = 0;
     try {
       const settings = await Settings.getSettings();
       if (settings.signupBonus.enabled) {
-        signupBonusAmount = settings.signupBonus.amount;
-
-        await Wallet.create({
-          userId: newUser._id,
-          balance: signupBonusAmount,
-          currency: settings.currency || 'USD'
-        });
-      } else {
-        await Wallet.create({
-          userId: newUser._id,
-          balance: 0,
-          currency: settings.currency || 'USD'
-        });
+        signupBonusAmount = settings.signupBonus.amount || 0;
       }
-    } catch (bonusError) {
-      console.error('Error awarding signup bonus / creating wallet:', bonusError);
+    } catch (settingsError) {
+      console.error('Error fetching signup bonus settings:', settingsError);
+      signupBonusAmount = 3; // fallback default
+    }
+
+    if (signupBonusAmount > 0) {
+      try {
+        const newUserWallet = await Wallet.findOrCreateWallet(newUser._id);
+        // ✅ addBonus() credits bonusBalance ONLY — never the main balance
+        newUserWallet.addBonus(signupBonusAmount, 'Welcome signup bonus');
+        await newUserWallet.save();
+        console.log(`✅ $${signupBonusAmount} signup bonus added to BONUS balance for ${username}`);
+      } catch (signupBonusError) {
+        console.error('Error awarding signup bonus:', signupBonusError);
+      }
+    } else {
+      // Ensure a wallet exists even when bonus is disabled
+      try {
+        await Wallet.findOrCreateWallet(newUser._id);
+      } catch (walletError) {
+        console.error('Error creating wallet:', walletError);
+      }
     }
 
     // ========================================
-    // HANDLE REFERRAL
+    // PROCESS REFERRAL CODE
     // ========================================
-    if (affiliateUsername) {
+    let referralApplied = false;
+    const referralCode = affiliateUsername;
+
+    if (referralCode) {
+      console.log(`\n🔗 Processing referral code: ${referralCode}`);
       try {
-        const affiliate = await User.findOne({ username: affiliateUsername.toLowerCase() });
-        if (affiliate) {
-          await Referral.create({
-            referrer: affiliate._id,
-            referred: newUser._id,
-            referredUsername: newUser.username,
-            createdAt: new Date()
-          });
-          console.log(`✅ Referral recorded: ${affiliateUsername} → ${username}`);
+        const referralTemplate = await Referral.findOne({
+          referralCode: referralCode.toUpperCase(),
+          referredUserId: null
+        }).populate('referrerId', 'username');
+
+        if (!referralTemplate) {
+          console.log('   ❌ Invalid referral code provided');
+        } else if (referralTemplate.referrerId._id.toString() === newUser._id.toString()) {
+          console.log('   ❌ User cannot refer themselves');
         } else {
-          console.log(`ℹ️  Referral code "${affiliateUsername}" did not match any user`);
+          referralTemplate.referredUserId = newUser._id;
+          referralTemplate.referredUsername = newUser.username;
+          referralTemplate.status = 'completed';
+          referralTemplate.completedAt = new Date();
+          await referralTemplate.save();
+
+          // link affiliate on the user
+          newUser.affiliateId = referralTemplate.referrerId._id;
+          await newUser.save();
+
+          referralApplied = true;
+          console.log(`   ✅ Referral linked: ${referralTemplate.referrerId.username} → ${username}`);
         }
       } catch (refError) {
-        console.error('Error recording referral:', refError);
+        console.error('Error processing referral:', refError);
       }
     }
 
@@ -436,7 +457,7 @@ const register = async (req, res) => {
     // ISSUE JWT
     // ========================================
     const token = jwt.sign(
-      { id: newUser._id, username: newUser.username, role: newUser.role },
+      { userId: newUser._id, username: newUser.username, role: newUser.role },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRY || '7d' }
     );
@@ -449,9 +470,10 @@ const register = async (req, res) => {
         user: {
           id: newUser._id,
           username: newUser.username,
-          role: newUser.role,
-          balance: signupBonusAmount
-        }
+          role: newUser.role
+        },
+        signupBonus: signupBonusAmount,
+        referralApplied
       }
     });
 
